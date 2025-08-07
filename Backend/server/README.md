@@ -1,0 +1,1 @@
+This folder contains the backend logic for the AutoMark Web Submission System. It handles grading, sandboxing and test case execution 
