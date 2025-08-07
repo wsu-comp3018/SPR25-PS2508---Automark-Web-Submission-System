@@ -1,0 +1,1 @@
+This folder will contain the codes for front end processes such as login, registrations and database intergration etc. For now there is only two things being done which will require further review by team.
