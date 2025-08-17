@@ -9,38 +9,21 @@ RUN apt-get update && apt-get install -y \
 
 RUN mkdir /var/run/sshd
 
-# Create a user 'student' with password 'student' and add to sudoers
-RUN useradd -ms /bin/bash student && \
-    echo "student:student" | chpasswd && \
-    adduser student sudo
+# Copy user creation script and user database CSV
+COPY create_users.sh /create_users.sh
+COPY students.csv /students.csv
 
-RUN groupadd -f student && usermod -aG student student
+RUN chmod +x /create_users.sh
 
-# Create parent dirs, lock them to root:root and no group write
-RUN mkdir -p /home/student/2025/AUT/PX \
-    /home/student/2025/SPR/PX && \
-    chown root:root /home/student/2025 /home/student/2025/AUT /home/student/2025/SPR \
-    /home/student/2025/AUT/PX /home/student/2025/SPR/PX && \
-    chmod 755 /home/student/2025 /home/student/2025/AUT /home/student/2025/SPR \
-    /home/student/2025/AUT/PX /home/student/2025/SPR/PX
-
-# Create assignment directories owned by root:student, student can write files but not remove folder
-RUN mkdir -p /home/student/2025/AUT/PX/Assignment1 \
-    /home/student/2025/AUT/PX/Assignment2 \
-    /home/student/2025/SPR/PX/Assignment1 \
-    /home/student/2025/SPR/PX/Assignment2 && \
-    chown root:student /home/student/2025/AUT/PX/Assignment1 /home/student/2025/AUT/PX/Assignment2 \
-    /home/student/2025/SPR/PX/Assignment1 /home/student/2025/SPR/PX/Assignment2 && \
-    chmod 1770 /home/student/2025/AUT/PX/Assignment1 /home/student/2025/AUT/PX/Assignment2 \
-    /home/student/2025/SPR/PX/Assignment1 /home/student/2025/SPR/PX/Assignment2
-    
-# Allow password authentication for SSH
+# SSH config for demo/testing (adjust for production use)
 RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
-    sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+    sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 
 # Set TimeZone
 RUN ln -sf /usr/share/zoneinfo/Australia/Sydney /etc/localtime
 
 EXPOSE 22
 
-CMD ["/usr/sbin/sshd","-D"]
+# On container start: create users, set up assignment dirs, start SSH server
+CMD ["/create_users.sh"]
