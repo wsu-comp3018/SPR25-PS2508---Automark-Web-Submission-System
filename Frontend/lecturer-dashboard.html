@@ -1,0 +1,1312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AutoMark — Lecturer Dashboard</title>
+  <style>
+    :root{
+      --primary:#667eea;
+      --accent:#764ba2;
+      --bg:#f4f6f8;
+      --card:#ffffff;
+      --muted:#666;
+      --danger:#e74c3c;
+      --success:#27ae60;
+      --warning:#f39c12;
+      --radius:12px;
+    }
+    *{box-sizing:border-box;font-family:'Segoe UI',Tahoma, Geneva, Verdana, sans-serif}
+    body{margin:0;background:var(--bg);padding:20px;color:#222}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+    .brand{display:flex;gap:12px;align-items:center}
+    .logo{font-size:28px;color:var(--primary)}
+    h1{margin:0;font-size:20px}
+    .controls{display:flex;gap:10px;align-items:center}
+    button{background:linear-gradient(135deg,var(--primary),var(--accent));border:none;color:#fff;padding:10px 14px;border-radius:10px;cursor:pointer;font-size:14px}
+    button:hover{opacity:0.9;transform:translateY(-1px)}
+    button:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+    button.ghost{background:transparent;border:1px solid rgba(0,0,0,0.08);color:#222}
+    button.success{background:linear-gradient(135deg,var(--success),#229954)}
+    button.warning{background:linear-gradient(135deg,var(--warning),#e67e22)}
+    button.danger{background:linear-gradient(135deg,var(--danger),#c0392b)}
+    .layout{display:grid;grid-template-columns:350px 1fr;gap:18px}
+    .panel{background:var(--card);border-radius:var(--radius);padding:16px;box-shadow:0 6px 18px rgba(0,0,0,0.04)}
+    .small{font-size:13px;color:var(--muted)}
+    .folder{padding:10px;border-radius:8px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid #f0f0f0;transition:all 0.2s}
+    .folder:hover{border-color:#ddd;background:#fafafa}
+    .folder.expanded{background:#f8f9ff;border-color:var(--primary)}
+    .folder .left{display:flex;gap:8px;align-items:center;flex:1}
+    .folder .name{font-weight:600}
+    .folder .meta{font-size:12px;color:var(--muted)}
+    .folder .status{font-size:11px;padding:2px 6px;border-radius:4px;text-transform:uppercase}
+    .status.active{background:#e8f5e8;color:var(--success)}
+    .status.draft{background:#fff3cd;color:var(--warning)}
+    .subfolders{margin-left:20px;margin-top:8px;border-left:2px solid #eee;padding-left:12px}
+    .actions{display:flex;gap:6px;flex-shrink:0}
+    .actions button{padding:6px 10px;font-size:12px}
+    .list{max-height:72vh;overflow:auto;padding-right:6px}
+    .form-row{display:flex;gap:8px;margin-bottom:12px}
+    .form-group{flex:1}
+    input[type="text"],input[type="number"],input[type="datetime-local"],select,textarea{
+      width:100%;padding:8px 12px;border-radius:8px;border:1px solid #e9ecef;font-size:14px;
+      transition:border-color 0.2s
+    }
+    input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)}
+    label{display:block;font-size:13px;margin-bottom:6px;font-weight:500}
+    .assign-list{max-height:140px;overflow:auto;border:1px dashed #eee;padding:10px;border-radius:8px;background:#fafafa}
+    .submission-list{max-height:280px;overflow:auto}
+    .muted{color:var(--muted)}
+    .pill{background:#f1f5ff;color:var(--primary);padding:4px 8px;border-radius:999px;font-size:12px}
+    a.download{color:var(--primary);text-decoration:none;font-weight:600}
+    a.download:hover{text-decoration:underline}
+    .footer{font-size:12px;color:var(--muted);margin-top:12px;padding-top:12px;border-top:1px solid #eee}
+    .file-input{display:none}
+    .file-label{display:inline-block;padding:8px 12px;background:#f1f5ff;border-radius:8px;cursor:pointer;font-size:13px;border:1px dashed var(--primary)}
+    .file-label:hover{background:#e6edff}
+    .file-info{font-size:12px;margin-top:6px;color:var(--muted)}
+    .student-item{display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:4px}
+    .student-item:hover{background:#f0f8ff;border-radius:4px}
+    .student-item input{margin:0}
+    .modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000}
+    .modal-content{background:white;padding:24px;border-radius:var(--radius);width:90%;max-width:600px;max-height:90vh;overflow:auto}
+    .modal-actions{display:flex;gap:8px;margin-top:20px;justify-content:flex-end}
+    .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:16px}
+    .stat{text-align:center;padding:12px;background:#f8f9fa;border-radius:8px}
+    .stat .number{font-size:20px;font-weight:bold;color:var(--primary)}
+    .stat .label{font-size:12px;color:var(--muted);text-transform:uppercase}
+    .progress-bar{width:100%;height:8px;background:#eee;border-radius:4px;overflow:hidden;margin-top:4px}
+    .progress-fill{height:100%;background:var(--primary);transition:width 0.3s}
+    .notification{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:8px;color:white;font-weight:500;z-index:1001;transform:translateX(400px);transition:transform 0.3s}
+    .notification.show{transform:translateX(0)}
+    .notification.success{background:var(--success)}
+    .notification.error{background:var(--danger)}
+    .notification.warning{background:var(--warning)}
+    .breadcrumb{font-size:14px;color:var(--muted);margin-bottom:12px}
+    .breadcrumb a{color:var(--primary);text-decoration:none}
+    .breadcrumb a:hover{text-decoration:underline}
+    .search-box{position:relative;margin-bottom:12px}
+    .search-box input{padding-left:35px}
+    .search-box::before{content:'🔍';position:absolute;left:12px;top:50%;transform:translateY(-50%);z-index:1}
+    .toggle-btn{background:transparent;border:1px solid var(--primary);color:var(--primary);padding:4px 8px;border-radius:4px;font-size:12px}
+    .toggle-btn.active{background:var(--primary);color:white}
+    @media (max-width:1024px){.layout{grid-template-columns:1fr}}
+    @media (max-width:768px){
+      body{padding:10px}
+      .layout{gap:12px}
+      .folder{flex-direction:column;align-items:flex-start}
+      .folder .actions{margin-top:8px;align-self:flex-end}
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="logo">📚 AutoMark</div>
+      <div>
+        <h1>Lecturer Dashboard</h1>
+        <div class="small">Create folders, assign to students, and manage submissions</div>
+      </div>
+    </div>
+    <div class="controls">
+      <div class="small" id="lecturerName">Welcome</div>
+      <button id="logoutBtn" class="ghost">Sign out</button>
+    </div>
+  </header>
+
+  <!-- Stats Section -->
+  <div class="stats">
+    <div class="stat">
+      <div class="number" id="totalFolders">0</div>
+      <div class="label">Total Folders</div>
+    </div>
+    <div class="stat">
+      <div class="number" id="totalStudents">0</div>
+      <div class="label">Students</div>
+    </div>
+    <div class="stat">
+      <div class="number" id="totalSubmissions">0</div>
+      <div class="label">Submissions</div>
+    </div>
+    <div class="stat">
+      <div class="number" id="pendingReview">0</div>
+      <div class="label">Pending Review</div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <!-- LEFT PANEL -->
+    <aside class="panel">
+      <h3 style="margin-top:0">Create Assignment Folder</h3>
+      <div class="small">Create organized folder structures with assignments and sub-assignments.</div>
+      
+      <div style="margin-top:16px">
+        <div class="form-group">
+          <label>Folder Name</label>
+          <input type="text" id="newFolderName" placeholder="e.g. Assignment 1 - Data Structures" />
+        </div>
+        
+        <div class="form-group">
+          <label>Description (Optional)</label>
+          <textarea id="folderDescription" rows="2" placeholder="Brief description of the assignment..."></textarea>
+        </div>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label>Due Date (Optional)</label>
+            <input type="datetime-local" id="folderDueDate" />
+          </div>
+          <div class="form-group">
+            <label>Max Points</label>
+            <input type="number" id="folderMaxPoints" placeholder="100" min="0" />
+          </div>
+        </div>
+        
+        <div class="form-group">
+          <label>Attach Instructions/Materials (Optional)</label>
+          <input type="file" id="folderFile" class="file-input" multiple accept=".pdf,.doc,.docx,.txt,.zip" />
+          <label for="folderFile" class="file-label">Choose files...</label>
+          <div id="folderFileInfo" class="file-info">No files selected</div>
+        </div>
+        
+        <div class="form-group">
+          <label>Assign to Students</label>
+          <div class="search-box">
+            <input type="text" id="studentSearch" placeholder="Search students..." />
+          </div>
+          <div class="assign-list" id="assignUserList"></div>
+        </div>
+        
+        <div class="form-group">
+          <label>Folder Status</label>
+          <select id="folderStatus">
+            <option value="draft">Draft (Hidden from students)</option>
+            <option value="active">Active (Visible to students)</option>
+          </select>
+        </div>
+        
+        <div style="margin-top:16px;display:flex;gap:8px">
+          <button id="createFolderBtn">Create Folder</button>
+          <button id="resetFoldersBtn" class="ghost">Clear Form</button>
+        </div>
+      </div>
+      
+      <hr style="margin:20px 0;border:none;border-top:1px solid #eee" />
+      
+      <h4 style="margin:6px 0">Quick Actions</h4>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button id="showAllSubs" class="ghost">View All Submissions</button>
+        <button id="exportData" class="ghost">Export Data (JSON)</button>
+        <button id="bulkAssign" class="ghost">Bulk Assignment</button>
+      </div>
+      
+      <div class="footer">
+        Data stored locally in browser storage.<br>
+        Export regularly to prevent data loss.
+      </div>
+    </aside>
+
+    <!-- RIGHT PANEL -->
+    <main class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">Assignment Structure</h3>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="expandAllBtn" class="toggle-btn">Expand All</button>
+          <button id="collapseAllBtn" class="toggle-btn">Collapse All</button>
+        </div>
+      </div>
+      
+      <div class="breadcrumb" id="breadcrumb" style="display:none">
+        <a href="#" id="breadcrumbHome">All Folders</a>
+      </div>
+      
+      <div class="small">Click folders to expand/collapse. Use actions to manage assignments and view submissions.</div>
+      <div class="list" id="folderList" style="margin-top:12px"></div>
+      
+      <!-- Submissions View -->
+      <div id="subViewer" style="display:none;margin-top:20px;border-top:2px solid #eee;padding-top:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h4 style="margin:0">Submissions for <span id="subViewerFolderName"></span></h4>
+          <div style="display:flex;gap:8px">
+            <button id="downloadAllSubs" class="success">Download All</button>
+            <button id="closeSubs" class="ghost">Close</button>
+          </div>
+        </div>
+        <div class="submission-list" id="submissionsContainer"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Subfolder Creation -->
+  <div id="subfolderModal" class="modal" style="display:none">
+    <div class="modal-content">
+      <h3 style="margin-top:0">Create Sub-Assignment</h3>
+      <div class="form-group">
+        <label>Sub-Assignment Name</label>
+        <input type="text" id="newSubfolderName" placeholder="e.g. Part 1 - Algorithm Design" />
+      </div>
+      
+      <div class="form-group">
+        <label>Description (Optional)</label>
+        <textarea id="subfolderDescription" rows="2" placeholder="Description of this sub-assignment..."></textarea>
+      </div>
+      
+      <div class="form-row">
+        <div class="form-group">
+          <label>Due Date (Optional)</label>
+          <input type="datetime-local" id="subfolderDueDate" />
+        </div>
+        <div class="form-group">
+          <label>Max Points</label>
+          <input type="number" id="subfolderMaxPoints" placeholder="50" min="0" />
+        </div>
+      </div>
+      
+      <div class="form-group">
+        <label>Attach Materials (Optional)</label>
+        <input type="file" id="subfolderFile" class="file-input" multiple />
+        <label for="subfolderFile" class="file-label">Choose files...</label>
+        <div id="subfolderFileInfo" class="file-info">No files selected</div>
+      </div>
+      
+      <div class="form-group">
+        <label>Assign to Students (from parent folder)</label>
+        <div class="assign-list" id="subfolderAssignList"></div>
+      </div>
+      
+      <div class="form-group">
+        <label>Status</label>
+        <select id="subfolderStatus">
+          <option value="draft">Draft</option>
+          <option value="active">Active</option>
+        </select>
+      </div>
+      
+      <div class="modal-actions">
+        <button id="cancelSubfolderBtn" class="ghost">Cancel</button>
+        <button id="createSubfolderBtn">Create Sub-Assignment</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Editing folder assignments -->
+  <div id="editAssignmentModal" class="modal" style="display:none">
+    <div class="modal-content">
+      <h3 style="margin-top:0">Edit Assignment Details</h3>
+      <div class="form-group">
+        <label>Assignment: <span id="editFolderName"></span></label>
+      </div>
+      
+      <div class="form-group">
+        <label>Description</label>
+        <textarea id="editDescription" rows="2"></textarea>
+      </div>
+      
+      <div class="form-row">
+        <div class="form-group">
+          <label>Due Date</label>
+          <input type="datetime-local" id="editDueDate" />
+        </div>
+        <div class="form-group">
+          <label>Max Points</label>
+          <input type="number" id="editMaxPoints" min="0" />
+        </div>
+      </div>
+      
+      <div class="form-group">
+        <label>Status</label>
+        <select id="editStatus">
+          <option value="draft">Draft</option>
+          <option value="active">Active</option>
+        </select>
+      </div>
+      
+      <div class="form-group">
+        <label>Assign to Students</label>
+        <div class="assign-list" id="editAssignList"></div>
+      </div>
+      
+      <div class="modal-actions">
+        <button id="cancelEditAssignmentBtn" class="ghost">Cancel</button>
+        <button id="saveAssignmentBtn">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bulk Assigning -->
+  <div id="bulkAssignModal" class="modal" style="display:none">
+    <div class="modal-content">
+      <h3 style="margin-top:0">Bulk Student Assignment</h3>
+      <div class="form-group">
+        <label>Select Folders to Assign</label>
+        <div class="assign-list" id="bulkFolderList" style="max-height:200px"></div>
+      </div>
+      
+      <div class="form-group">
+        <label>Select Students</label>
+        <div style="margin-bottom:8px">
+          <button type="button" id="selectAllStudents" class="toggle-btn">Select All</button>
+          <button type="button" id="deselectAllStudents" class="toggle-btn">Deselect All</button>
+        </div>
+        <div class="assign-list" id="bulkStudentList" style="max-height:200px"></div>
+      </div>
+      
+      <div class="modal-actions">
+        <button id="cancelBulkAssignBtn" class="ghost">Cancel</button>
+        <button id="applyBulkAssignBtn">Apply Assignments</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Notification -->
+  <div id="notification" class="notification"></div>
+
+<script>
+const STORAGE_FOLDERS = 'automark_folders';
+const STORAGE_SUBS = 'automark_submissions';
+const USERS_KEY = 'automark_users';
+const SESSION_KEY = 'automark_user';
+const FILES_KEY = 'automark_files';
+
+function $(id){return document.getElementById(id)}
+function loadJSON(key){ return JSON.parse(localStorage.getItem(key) || '[]') }
+function saveJSON(key, obj){ localStorage.setItem(key, JSON.stringify(obj)) }
+function uid(prefix='id'){ return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8) }
+
+// Global state
+let expandedFolders = new Set();
+let filteredStudents = [];
+
+// Notification system
+function showNotification(message, type = 'success') {
+  const notification = $('notification');
+  notification.textContent = message;
+  notification.className = `notification ${type} show`;
+  setTimeout(() => {
+    notification.classList.remove('show');
+  }, 3000);
+}
+
+// Ensure lecturer
+const currentUser = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+if(!currentUser || currentUser.role !== 'lecturer'){
+  alert('Not signed in as lecturer. Redirecting to login.');
+  window.location.href = 'Login and Registration.html';
+}
+$('lecturerName').textContent = `Hi, ${currentUser.firstName || currentUser.username}`;
+let allUsers = loadJSON(USERS_KEY);
+const students = allUsers.filter(u => u.role === 'student');
+filteredStudents = [...students];
+
+// file handling - multiple files
+function saveFiles(files, callback) {
+  let savedFiles = [];
+  let processed = 0;
+  
+  if (files.length === 0) {
+    callback([]);
+    return;
+  }
+  
+  Array.from(files).forEach(file => {
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const fileData = {
+        id: uid('file'),
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        lastModified: file.lastModified,
+        content: e.target.result.split(',')[1]
+      };
+      
+      const existingFiles = loadJSON(FILES_KEY) || [];
+      existingFiles.push(fileData);
+      saveJSON(FILES_KEY, existingFiles);
+      
+      savedFiles.push(fileData.id);
+      processed++;
+      
+      if (processed === files.length) {
+        callback(savedFiles);
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function getFile(fileId) {
+  const files = loadJSON(FILES_KEY) || [];
+  return files.find(f => f.id === fileId);
+}
+
+function downloadFile(fileId, fileName) {
+  const file = getFile(fileId);
+  if (!file) return;
+  
+  const link = document.createElement('a');
+  link.href = `data:${file.type};base64,${file.content}`;
+  link.download = fileName || file.name;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+// Enhanced folder functions
+function getFolders(){ return loadJSON(STORAGE_FOLDERS) }
+function saveFolders(f){ saveJSON(STORAGE_FOLDERS,f) }
+function getSubs(){ return loadJSON(STORAGE_SUBS) }
+function saveSubs(s){ saveJSON(STORAGE_SUBS,s) }
+
+function createFolder(name, assignedTo=[], fileIds=[], description='', dueDate='', maxPoints='', status='draft'){
+  if(!name.trim()) return false;
+  const folders = getFolders();
+  const newFolder = { 
+    id: uid('folder'), 
+    name: name.trim(), 
+    description: description.trim(),
+    assignedTo, 
+    fileIds,
+    dueDate,
+    maxPoints: maxPoints ? parseInt(maxPoints) : null,
+    status,
+    subfolders: [], 
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  folders.push(newFolder);
+  saveFolders(folders); 
+  showNotification(`Folder "${name}" created successfully!`);
+  renderFolderList();
+  updateStatistics();
+  return true;
+}
+
+function createSubfolder(parentId, name, assignedTo=[], fileIds=[], description='', dueDate='', maxPoints='', status='draft'){
+  const folders = getFolders();
+  const parent = findFolderById(folders, parentId);
+  if(!parent) return false;
+  
+  const newSubfolder = { 
+    id: uid('sub'), 
+    name: name.trim(), 
+    description: description.trim(),
+    assignedTo, 
+    fileIds,
+    dueDate,
+    maxPoints: maxPoints ? parseInt(maxPoints) : null,
+    status,
+    subfolders: [], 
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  
+  parent.subfolders.push(newSubfolder);
+  parent.updatedAt = new Date().toISOString();
+  saveFolders(folders); 
+  showNotification(`Sub-assignment "${name}" created successfully!`);
+  renderFolderList();
+  updateStatistics();
+  return true;
+}
+
+function findFolderById(list, id, path = []){
+  for(const f of list){
+    const currentPath = [...path, f];
+    if(f.id === id) return f;
+    if(f.subfolders?.length){
+      const sub = findFolderById(f.subfolders, id, currentPath);
+      if(sub) return sub;
+    }
+  }
+  return null;
+}
+
+function removeFolderById(list, id){
+  for(let i=0;i<list.length;i++){
+    if(list[i].id===id){ 
+      list.splice(i,1); 
+      return true;
+    }
+    if(list[i].subfolders?.length){
+      if(removeFolderById(list[i].subfolders, id)) {
+        list[i].updatedAt = new Date().toISOString();
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function updateFolder(folderId, updates) {
+  const folders = getFolders();
+  const folder = findFolderById(folders, folderId);
+  if (!folder) return false;
+
+  Object.assign(folder, updates, { updatedAt: new Date().toISOString() });
+
+  // If updating assignments on parent, optionally cascade to subfolders
+  if (updates.assignedTo && folder.subfolders?.length) {
+    function updateSubfolders(subfolders) {
+      subfolders.forEach(sub => {
+        // Only update if subfolder assignments are a subset of parent
+        sub.assignedTo = sub.assignedTo.filter(id => updates.assignedTo.includes(id));
+        sub.updatedAt = new Date().toISOString();
+        if (sub.subfolders?.length) {
+          updateSubfolders(sub.subfolders);
+        }
+      });
+    }
+    updateSubfolders(folder.subfolders);
+  }
+
+  saveFolders(folders);
+  return true;
+}
+
+// Student search 
+function filterStudents() {
+  const query = $('studentSearch').value.toLowerCase();
+  filteredStudents = students.filter(student => {
+    const name = (student.firstName || student.username).toLowerCase();
+    const email = (student.email || '').toLowerCase();
+    return name.includes(query) || email.includes(query);
+  });
+  renderAssignList();
+}
+
+function renderAssignList(containerId = 'assignUserList', selectedIds = []){
+  const container = $(containerId);
+  container.innerHTML = '';
+  
+  if(filteredStudents.length === 0){
+    container.innerHTML = '<div class="muted">No students found</div>';
+    return;
+  }
+  
+  filteredStudents.forEach(student => {
+    const div = document.createElement('div');
+    div.className = 'student-item';
+    const isSelected = selectedIds.includes(student.id);
+    div.innerHTML = `
+      <input type="checkbox" id="${containerId}-${student.id}" value="${student.id}" ${isSelected ? 'checked' : ''}>
+      <label for="${containerId}-${student.id}">
+        ${student.firstName || student.username} 
+        <span class="small">(${student.email})</span>
+      </label>
+    `;
+    container.appendChild(div);
+  });
+}
+
+function renderSubfolderAssignList(parentFolderId){
+  const container = $('subfolderAssignList');
+  container.innerHTML = '';
+  
+  const parentFolder = findFolderById(getFolders(), parentFolderId);
+  if(!parentFolder || parentFolder.assignedTo.length === 0){
+    container.innerHTML = '<div class="muted">No students assigned to parent folder</div>';
+    return;
+  }
+  
+  const assignedStudents = students.filter(s => parentFolder.assignedTo.includes(s.id));
+  
+  assignedStudents.forEach(student => {
+    const div = document.createElement('div');
+    div.className = 'student-item';
+    div.innerHTML = `
+      <input type="checkbox" id="sub-assign-${student.id}" value="${student.id}" checked>
+      <label for="sub-assign-${student.id}">
+        ${student.firstName || student.username} 
+        <span class="small">(${student.email})</span>
+      </label>
+    `;
+    container.appendChild(div);
+  });
+}
+
+function renderEditAssignmentList(folderId) {
+  const container = $('editAssignList');
+  const folder = findFolderById(getFolders(), folderId);
+  if (!folder) {
+    container.innerHTML = '<div class="muted">Folder not found</div>';
+    return;
+  }
+  
+  $('editFolderName').textContent = folder.name;
+  $('editDescription').value = folder.description || '';
+  $('editDueDate').value = folder.dueDate || '';
+  $('editMaxPoints').value = folder.maxPoints || '';
+  $('editStatus').value = folder.status || 'draft';
+  $('editAssignmentModal').dataset.folderId = folderId;
+  
+  renderAssignList('editAssignList', folder.assignedTo);
+}
+
+function renderFolderList(){
+  const container = $('folderList');
+  container.innerHTML = '';
+  
+  const folders = getFolders();
+  if(folders.length === 0){
+    container.innerHTML = '<div class="muted">No assignments created yet. Use the form on the left to create your first assignment.</div>';
+    return;
+  }
+  
+  folders.forEach(folder => {
+    renderFolderItem(container, folder);
+  });
+}
+
+function renderFolderItem(container, folder, level=0){
+  const div = document.createElement('div');
+  div.className = `folder ${expandedFolders.has(folder.id) ? 'expanded' : ''}`;
+  div.style.paddingLeft = `${level * 16}px`;
+  
+  const assignedCount = folder.assignedTo?.length || 0;
+  const subCount = folder.subfolders?.length || 0;
+  const hasFiles = folder.fileIds?.length > 0 ? '📎' : '';
+  const statusClass = folder.status === 'active' ? 'active' : 'draft';
+  const statusText = folder.status === 'active' ? 'Active' : 'Draft';
+  
+  // submission count 
+  const subs = getSubs();
+  const submissionCount = subs.filter(s => s.folderId === folder.id && !s.subfolderId).length;
+  
+  //  due date
+  const dueDateText = folder.dueDate ? 
+    `Due: ${new Date(folder.dueDate).toLocaleDateString()}` : 
+    'No due date';
+  
+  const pointsText = folder.maxPoints ? `${folder.maxPoints} pts` : 'No points set';
+  
+  div.innerHTML = `
+    <div class="left">
+      <div style="display:flex;align-items:center;gap:8px;cursor:pointer" data-action="toggle" data-id="${folder.id}">
+        <span style="font-size:12px">${subCount > 0 ? (expandedFolders.has(folder.id) ? '📂' : '📁') : '📄'}</span>
+        <span class="name">${folder.name} ${hasFiles}</span>
+      </div>
+      <div class="meta">
+        <span class="status ${statusClass}">${statusText}</span>
+        ${assignedCount} student(s) • ${submissionCount} submission(s) • ${dueDateText} • ${pointsText}
+      </div>
+      ${folder.description ? `<div class="small" style="margin-top:4px;font-style:italic">${folder.description}</div>` : ''}
+    </div>
+    <div class="actions">
+      ${level < 3 ? `<button class="ghost" data-action="add-sub" data-id="${folder.id}" title="Add Sub-Assignment">+ Sub</button>` : ''}
+      <button class="ghost" data-action="edit-assign" data-id="${folder.id}" title="Edit Assignment">Edit</button>
+      <button class="ghost" data-action="view-sub" data-id="${folder.id}" title="View Submissions">Submissions</button>
+      <button class="ghost" data-action="clone" data-id="${folder.id}" title="Clone Assignment">Clone</button>
+      <button class="ghost danger" data-action="delete" data-id="${folder.id}" title="Delete Assignment">Delete</button>
+    </div>
+  `;
+  
+  container.appendChild(div);
+  
+  // Render subfolders if expanded
+  if(expandedFolders.has(folder.id) && folder.subfolders?.length > 0){
+    const subContainer = document.createElement('div');
+    subContainer.className = 'subfolders';
+    folder.subfolders.forEach(sub => {
+      renderFolderItem(subContainer, sub, level + 1);
+    });
+    container.appendChild(subContainer);
+  }
+}
+
+function renderSubmissions(folderId, subfolderId=null){
+  const subs = getSubs();
+  const container = $('submissionsContainer');
+  container.innerHTML = '';
+  
+  let folder;
+  const folders = getFolders();
+  folder = findFolderById(folders, subfolderId || folderId);
+  
+  if(!folder){
+    container.innerHTML = '<div class="muted">Folder not found</div>';
+    return;
+  }
+  
+  $('subViewerFolderName').textContent = folder.name;
+  $('subViewer').style.display = 'block';
+  
+  const folderSubs = subs.filter(sub => 
+    (subfolderId && sub.folderId === folderId && sub.subfolderId === subfolderId) ||
+    (!subfolderId && sub.folderId === folderId && !sub.subfolderId)
+  );
+  
+  if(folderSubs.length === 0){
+    container.innerHTML = `
+      <div class="muted">
+        No submissions yet for this ${subfolderId ? 'sub-assignment' : 'assignment'}.
+        ${folder.status === 'draft' ? '<br><strong>Note:</strong> This assignment is in draft mode and not visible to students.' : ''}
+      </div>
+    `;
+    return;
+  }
+  
+  // Sort submissions - submission date 
+  folderSubs.sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
+  
+  folderSubs.forEach(sub => {
+    const student = allUsers.find(u => u.id === sub.studentId);
+    const isLate = folder.dueDate && new Date(sub.submittedAt) > new Date(folder.dueDate);
+    
+    const div = document.createElement('div');
+    div.className = 'folder';
+    div.style.marginBottom = '12px';
+    div.innerHTML = `
+      <div class="left">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="name">${student?.firstName || student?.username || 'Unknown'}</span>
+          ${isLate ? '<span class="status" style="background:#ffebee;color:#c62828">LATE</span>' : ''}
+        </div>
+        <div class="meta">
+          ${student?.email || 'No email'} • 
+          Submitted: ${new Date(sub.submittedAt).toLocaleString()}
+          ${sub.fileIds?.length ? ` • ${sub.fileIds.length} file(s)` : ' • No files'}
+        </div>
+      </div>
+      <div class="actions">
+        <button class="ghost" data-action="grade" data-id="${sub.id}" title="Grade Submission">Grade</button>
+        <a href="#" class="download" data-action="download-sub" data-id="${sub.id}" title="Download Files">Download</a>
+        <button class="ghost danger" data-action="delete-sub" data-id="${sub.id}" title="Delete Submission">Delete</button>
+      </div>
+    `;
+    container.appendChild(div);
+  });
+}
+
+function renderBulkAssignmentLists() {
+  const folderContainer = $('bulkFolderList');
+  const studentContainer = $('bulkStudentList');
+  
+  folderContainer.innerHTML = '';
+  studentContainer.innerHTML = '';
+  
+  const folders = getFolders();
+  
+  function addFolderToList(folder, level = 0) {
+    const div = document.createElement('div');
+    div.className = 'student-item';
+    div.style.paddingLeft = `${level * 16}px`;
+    div.innerHTML = `
+      <input type="checkbox" id="bulk-folder-${folder.id}" value="${folder.id}">
+      <label for="bulk-folder-${folder.id}">
+        ${folder.name}
+        <span class="small">(${folder.assignedTo.length} students assigned)</span>
+      </label>
+    `;
+    folderContainer.appendChild(div);
+    
+    if (folder.subfolders?.length) {
+      folder.subfolders.forEach(sub => addFolderToList(sub, level + 1));
+    }
+  }
+  
+  folders.forEach(folder => addFolderToList(folder));
+  
+  students.forEach(student => {
+    const div = document.createElement('div');
+    div.className = 'student-item';
+    div.innerHTML = `
+      <input type="checkbox" id="bulk-student-${student.id}" value="${student.id}">
+      <label for="bulk-student-${student.id}">
+        ${student.firstName || student.username} 
+        <span class="small">(${student.email})</span>
+      </label>
+    `;
+    studentContainer.appendChild(div);
+  });
+}
+
+function updateStatistics() {
+  const folders = getFolders();
+  const submissions = getSubs();
+  
+  function countFolders(folderList) {
+    let count = folderList.length;
+    folderList.forEach(folder => {
+      if (folder.subfolders?.length) {
+        count += countFolders(folder.subfolders);
+      }
+    });
+    return count;
+  }
+  
+  const totalFolders = countFolders(folders);
+  const totalStudents = students.length;
+  const totalSubmissions = submissions.length;
+  const pendingReview = submissions.filter(sub => !sub.graded).length;
+  
+  $('totalFolders').textContent = totalFolders;
+  $('totalStudents').textContent = totalStudents;
+  $('totalSubmissions').textContent = totalSubmissions;
+  $('pendingReview').textContent = pendingReview;
+}
+
+function cloneFolder(originalId) {
+  const folders = getFolders();
+  const original = findFolderById(folders, originalId);
+  if (!original) return false;
+  
+  const clone = {
+    ...original,
+    id: uid('folder'),
+    name: `${original.name} (Copy)`,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    assignedTo: [], 
+    subfolders: cloneSubfolders(original.subfolders || [])
+  };
+  
+  folders.push(clone);
+  saveFolders(folders);
+  showNotification(`Assignment "${original.name}" cloned successfully!`);
+  renderFolderList();
+  updateStatistics();
+  return true;
+}
+
+function cloneSubfolders(subfolders) {
+  return subfolders.map(sub => ({
+    ...sub,
+    id: uid('sub'),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    assignedTo: [],
+    subfolders: cloneSubfolders(sub.subfolders || [])
+  }));
+}
+
+// Event listeners
+document.addEventListener('DOMContentLoaded', () => {
+  // File input handlers with multiple file support
+  $('folderFile').addEventListener('change', (e) => {
+    const files = e.target.files;
+    if(files.length > 0){
+      const names = Array.from(files).map(f => f.name).join(', ');
+      const totalSize = Array.from(files).reduce((sum, f) => sum + f.size, 0);
+      $('folderFileInfo').textContent = `${files.length} file(s): ${names} (${(totalSize/1024).toFixed(1)} KB total)`;
+    } else {
+      $('folderFileInfo').textContent = 'No files selected';
+    }
+  });
+  
+  $('subfolderFile').addEventListener('change', (e) => {
+    const files = e.target.files;
+    if(files.length > 0){
+      const names = Array.from(files).map(f => f.name).join(', ');
+      const totalSize = Array.from(files).reduce((sum, f) => sum + f.size, 0);
+      $('subfolderFileInfo').textContent = `${files.length} file(s): ${names} (${(totalSize/1024).toFixed(1)} KB total)`;
+    } else {
+      $('subfolderFileInfo').textContent = 'No files selected';
+    }
+  });
+  
+  // Student search
+  $('studentSearch').addEventListener('input', filterStudents);
+  
+  // Create main folder
+  $('createFolderBtn').addEventListener('click', () => {
+    const name = $('newFolderName').value.trim();
+    const description = $('folderDescription').value.trim();
+    const dueDate = $('folderDueDate').value;
+    const maxPoints = $('folderMaxPoints').value;
+    const status = $('folderStatus').value;
+    
+    if(!name) return showNotification('Please enter a folder name', 'error');
+    
+    const checked = Array.from($('assignUserList').querySelectorAll('input:checked'));
+    const assignedTo = checked.map(el => el.value);
+    
+    const fileInput = $('folderFile');
+    if(fileInput.files.length > 0){
+      saveFiles(fileInput.files, (fileIds) => {
+        if(createFolder(name, assignedTo, fileIds, description, dueDate, maxPoints, status)){
+          clearFolderForm();
+        }
+      });
+    } else {
+      if(createFolder(name, assignedTo, [], description, dueDate, maxPoints, status)){
+        clearFolderForm();
+      }
+    }
+  });
+  
+  function clearFolderForm() {
+    $('newFolderName').value = '';
+    $('folderDescription').value = '';
+    $('folderDueDate').value = '';
+    $('folderMaxPoints').value = '';
+    $('folderStatus').value = 'draft';
+    $('folderFile').value = '';
+    $('folderFileInfo').textContent = 'No files selected';
+    $('assignUserList').querySelectorAll('input').forEach(el => el.checked = false);
+    $('studentSearch').value = '';
+    filterStudents();
+  }
+  
+  // Reset form
+  $('resetFoldersBtn').addEventListener('click', clearFolderForm);
+  
+  // Expand/Collapse 
+  $('expandAllBtn').addEventListener('click', () => {
+    const folders = getFolders();
+    function addAllIds(folderList) {
+      folderList.forEach(folder => {
+        expandedFolders.add(folder.id);
+        if (folder.subfolders?.length) {
+          addAllIds(folder.subfolders);
+        }
+      });
+    }
+    addAllIds(folders);
+    renderFolderList();
+  });
+  
+  $('collapseAllBtn').addEventListener('click', () => {
+    expandedFolders.clear();
+    renderFolderList();
+  });
+  
+  // Folder list actions
+  $('folderList').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action]');
+    if(!btn) return;
+    
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+    
+    if(action === 'toggle'){
+      if(expandedFolders.has(id)){
+        expandedFolders.delete(id);
+      } else {
+        expandedFolders.add(id);
+      }
+      renderFolderList();
+    }
+    else if(action === 'add-sub'){
+      const folder = findFolderById(getFolders(), id);
+      if(!folder) return;
+      
+      $('subfolderModal').style.display = 'flex';
+      $('newSubfolderName').value = '';
+      $('subfolderDescription').value = '';
+      $('subfolderDueDate').value = '';
+      $('subfolderMaxPoints').value = '';
+      $('subfolderStatus').value = 'draft';
+      $('subfolderFile').value = '';
+      $('subfolderFileInfo').textContent = 'No files selected';
+      $('subfolderModal').dataset.parentId = id;
+      renderSubfolderAssignList(id);
+    }
+    else if(action === 'edit-assign'){
+      renderEditAssignmentList(id);
+      $('editAssignmentModal').style.display = 'flex';
+    }
+    else if(action === 'view-sub'){
+      renderSubmissions(id);
+    }
+    else if(action === 'clone'){
+      if(confirm('Clone this assignment? The clone will have no students assigned.')) {
+        cloneFolder(id);
+      }
+    }
+    else if(action === 'delete'){
+      if(!confirm('Delete this assignment and all its contents? This cannot be undone.')) return;
+      const folders = getFolders();
+      if(removeFolderById(folders, id)){
+        saveFolders(folders);
+        showNotification('Assignment deleted successfully');
+        renderFolderList();
+        updateStatistics();
+      }
+    }
+  });
+  
+  // Submissions container actions
+  $('submissionsContainer').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action]');
+    if(!btn) return;
+    
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+    
+    if(action === 'download-sub'){
+      e.preventDefault();
+      const sub = getSubs().find(s => s.id === id);
+      if(sub && sub.fileIds?.length > 0){
+        sub.fileIds.forEach((fileId, index) => {
+          const file = getFile(fileId);
+          if(file) {
+            setTimeout(() => {
+              downloadFile(fileId, `submission_${sub.studentId}_${index + 1}_${file.name}`);
+            }, index * 100); 
+          }
+        });
+        showNotification(`Downloading ${sub.fileIds.length} file(s)...`);
+      } else {
+        showNotification('No files to download', 'warning');
+      }
+    }
+    else if(action === 'grade'){
+      showNotification('Grading feature coming soon!', 'warning');
+      // TODO: Implement grading modal
+    }
+    else if(action === 'delete-sub'){
+      if(!confirm('Delete this submission? This cannot be undone.')) return;
+      const subs = getSubs();
+      const idx = subs.findIndex(x => x.id === id);
+      if(idx > -1) {
+        subs.splice(idx, 1);
+        saveSubs(subs);
+        showNotification('Submission deleted');
+        
+        // Refresh the current view
+        const folderName = $('subViewerFolderName').textContent;
+        const folders = getFolders();
+        const folder = folders.find(f => f.name === folderName);
+        if(folder) renderSubmissions(folder.id);
+        updateStatistics();
+      }
+    }
+  });
+  
+  // Download submissions
+  $('downloadAllSubs').addEventListener('click', () => {
+    const folderName = $('subViewerFolderName').textContent;
+    const subs = getSubs();
+    const folderSubs = subs.filter(sub => {
+      const folder = findFolderById(getFolders(), sub.folderId);
+      return folder && folder.name === folderName;
+    });
+    
+    if(folderSubs.length === 0) {
+      showNotification('No submissions to download', 'warning');
+      return;
+    }
+    
+    let downloadCount = 0;
+    folderSubs.forEach((sub, subIndex) => {
+      if(sub.fileIds?.length > 0) {
+        sub.fileIds.forEach((fileId, fileIndex) => {
+          const file = getFile(fileId);
+          if(file) {
+            const student = allUsers.find(u => u.id === sub.studentId);
+            const studentName = student?.firstName || student?.username || 'Unknown';
+            setTimeout(() => {
+              downloadFile(fileId, `${studentName}_${subIndex + 1}_${fileIndex + 1}_${file.name}`);
+            }, downloadCount * 200);
+            downloadCount++;
+          }
+        });
+      }
+    });
+    
+    if(downloadCount > 0) {
+      showNotification(`Downloading ${downloadCount} file(s) from ${folderSubs.length} submission(s)...`);
+    } else {
+      showNotification('No files found in submissions', 'warning');
+    }
+  });
+  
+  // Subfolder actions
+  $('cancelSubfolderBtn').addEventListener('click', () => {
+    $('subfolderModal').style.display = 'none';
+  });
+  
+  $('createSubfolderBtn').addEventListener('click', () => {
+    const parentId = $('subfolderModal').dataset.parentId;
+    const name = $('newSubfolderName').value.trim();
+    const description = $('subfolderDescription').value.trim();
+    const dueDate = $('subfolderDueDate').value;
+    const maxPoints = $('subfolderMaxPoints').value;
+    const status = $('subfolderStatus').value;
+    
+    if(!name) return showNotification('Please enter a sub-assignment name', 'error');
+    
+    const checked = Array.from($('subfolderAssignList').querySelectorAll('input:checked'));
+    const assignedTo = checked.map(el => el.value);
+    
+    const fileInput = $('subfolderFile');
+    if(fileInput.files.length > 0){
+      saveFiles(fileInput.files, (fileIds) => {
+        if(createSubfolder(parentId, name, assignedTo, fileIds, description, dueDate, maxPoints, status)){
+          $('subfolderModal').style.display = 'none';
+          expandedFolders.add(parentId); 
+        }
+      });
+    } else {
+      if(createSubfolder(parentId, name, assignedTo, [], description, dueDate, maxPoints, status)){
+        $('subfolderModal').style.display = 'none';
+        expandedFolders.add(parentId);
+      }
+    }
+  });
+  
+  // Edit assignment actions
+  $('cancelEditAssignmentBtn').addEventListener('click', () => {
+    $('editAssignmentModal').style.display = 'none';
+  });
+  
+  $('saveAssignmentBtn').addEventListener('click', () => {
+    const folderId = $('editAssignmentModal').dataset.folderId;
+    const checked = Array.from($('editAssignList').querySelectorAll('input:checked'));
+    const assignedTo = checked.map(el => el.value);
+    
+    const updates = {
+      assignedTo,
+      description: $('editDescription').value.trim(),
+      dueDate: $('editDueDate').value,
+      maxPoints: $('editMaxPoints').value ? parseInt($('editMaxPoints').value) : null,
+      status: $('editStatus').value
+    };
+    
+    if(updateFolder(folderId, updates)) {
+      showNotification('Assignment updated successfully!');
+      $('editAssignmentModal').style.display = 'none';
+      renderFolderList();
+      updateStatistics();
+    } else {
+      showNotification('Failed to update assignment', 'error');
+    }
+  });
+  
+  // Close submissions view
+  $('closeSubs').addEventListener('click', () => {
+    $('subViewer').style.display = 'none';
+  });
+  
+  // Show all submissions
+  $('showAllSubs').addEventListener('click', () => {
+    const subs = getSubs();
+    const container = $('submissionsContainer');
+    container.innerHTML = '';
+    
+    $('subViewerFolderName').textContent = 'All Submissions';
+    $('subViewer').style.display = 'block';
+    
+    if(subs.length === 0){
+      container.innerHTML = '<div class="muted">No submissions found across all assignments.</div>';
+      return;
+    }
+    
+    // Sort by submission date
+    subs.sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
+    
+    subs.forEach(sub => {
+      const student = allUsers.find(u => u.id === sub.studentId);
+      const folder = findFolderById(getFolders(), sub.folderId);
+      const subfolder = sub.subfolderId ? findFolderById(getFolders(), sub.subfolderId) : null;
+      
+      const div = document.createElement('div');
+      div.className = 'folder';
+      div.style.marginBottom = '12px';
+      div.innerHTML = `
+        <div class="left">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="name">${student?.firstName || student?.username || 'Unknown'}</span>
+          </div>
+          <div class="meta">
+            Submitted to: ${folder?.name || 'Unknown'}${subfolder ? ` → ${subfolder.name}` : ''} • 
+            ${new Date(sub.submittedAt).toLocaleString()}
+            ${sub.fileIds?.length ? ` • ${sub.fileIds.length} file(s)` : ' • No files'}
+          </div>
+        </div>
+        <div class="actions">
+          <button class="ghost" data-action="grade" data-id="${sub.id}">Grade</button>
+          <a href="#" class="download" data-action="download-sub" data-id="${sub.id}">Download</a>
+          <button class="ghost danger" data-action="delete-sub" data-id="${sub.id}">Delete</button>
+        </div>
+      `;
+      container.appendChild(div);
+    });
+  });
+  
+  // Bulk assigning students
+  $('bulkAssign').addEventListener('click', () => {
+    renderBulkAssignmentLists();
+    $('bulkAssignModal').style.display = 'flex';
+  });
+  
+  $('selectAllStudents').addEventListener('click', () => {
+    $('bulkStudentList').querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+  });
+  
+  $('deselectAllStudents').addEventListener('click', () => {
+    $('bulkStudentList').querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+  });
+  
+  $('cancelBulkAssignBtn').addEventListener('click', () => {
+    $('bulkAssignModal').style.display = 'none';
+  });
+  
+  $('applyBulkAssignBtn').addEventListener('click', () => {
+    const selectedFolders = Array.from($('bulkFolderList').querySelectorAll('input:checked')).map(el => el.value);
+    const selectedStudents = Array.from($('bulkStudentList').querySelectorAll('input:checked')).map(el => el.value);
+    
+    if(selectedFolders.length === 0 || selectedStudents.length === 0) {
+      showNotification('Please select both folders and students', 'error');
+      return;
+    }
+    
+    let updated = 0;
+    selectedFolders.forEach(folderId => {
+      if(updateFolder(folderId, { assignedTo: selectedStudents })) {
+        updated++;
+      }
+    });
+    
+    if(updated > 0) {
+      showNotification(`Updated ${updated} assignment(s) successfully!`);
+      $('bulkAssignModal').style.display = 'none';
+      renderFolderList();
+      updateStatistics();
+    } else {
+      showNotification('Failed to update assignments', 'error');
+    }
+  });
+  
+  // Exporting data
+  $('exportData').addEventListener('click', () => {
+    const data = {
+      folders: getFolders(),
+      submissions: getSubs(),
+      users: allUsers.filter(u => u.role === 'student'), 
+      files: loadJSON(FILES_KEY) || [],
+      exportedAt: new Date().toISOString(),
+      version: '2.0'
+    };
+    
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `automark-export-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showNotification('Data exported successfully!');
+  });
+  
+ 
+  
+  // Logout
+  $('logoutBtn').addEventListener('click', () => {
+    if(confirm('Are you sure you want to sign out?')) {
+      localStorage.removeItem(SESSION_KEY);
+      location.href = 'Login and Registration.html';
+    }
+  });
+  
+  // start actions
+  filterStudents();
+  renderFolderList();
+  updateStatistics();
+});
+</script>
+</body>
+</html>

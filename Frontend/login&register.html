@@ -546,10 +546,10 @@
     <div class="dashboard-preview" id="dashboard-preview">
         <div class="dashboard-content">
             <h2>🎉 Welcome to AutoMark System!</h2>
-            <p>Login successful! You will be redirected to your dashboard.</p>
+            <p>Login successful! </p>
             <div class="loading" style="display: flex; margin: 20px 0;">
                 <div class="spinner"></div>
-                <span>Loading dashboard...</span>
+                <span>Loading Please Wait...</span>
             </div>
         </div>
     </div>
@@ -910,7 +910,7 @@
 
         // Sign in form handler
 
-   /*  
+    
         document.getElementById('signinForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             
@@ -954,10 +954,10 @@
                 hideLoading('signin-loading');
                 showError('signin-error', error.message);
             }
-        });*/
+        });
 
 
-        // Sign in form handler (SSH API)
+   /*     // Sign in form handler (SSH API)
 document.getElementById('signinForm').addEventListener('submit', async function(e) {
     e.preventDefault();
     hideError('signin-error');
@@ -996,7 +996,7 @@ document.getElementById('signinForm').addEventListener('submit', async function(
         showError('signin-error', "Connection error");
     }
 });
-
+*/
 
         // Dashboard preview and redirection
         function showDashboardPreview(user) {
@@ -1009,26 +1009,17 @@ document.getElementById('signinForm').addEventListener('submit', async function(
             }, 3000);
         }
 
-        // Redirect to appropriate dashboard based on user role (only as a placeholder)
-        function redirectToDashboard(user) {
-            const dashboardUrls = {
-                'student': 'student-dashboard.html',
-                'lecturer': 'lecturer-dashboard.html',
-                'admin': 'admin-dashboard.html'
-            };
-            
-            const dashboardUrl = dashboardUrls[user.role] || 'dashboard.html';
-            
-            // For demo purposes, show alert instead of redirect
-           alert(`Redirecting to ${user.role} dashboard...\nWelcome, ${user.firstName} ${user.lastName}!`);
-            
-            //uncomment the line below, when applying it in real scenario:
-           // window.location.href = "";
-            
-          
-            document.getElementById('dashboard-preview').style.display = 'none';
-        }
-
+        // Redirect to appropriate dashboard based on user role 
+       function redirectToDashboard(user) {
+    const dashboardUrls = {
+        'student': 'student-dashboard.html', //For successful navigation the name of the file here will need to be changed if Laura's student dashboard file is named something else
+        'lecturer': 'lecturer-dashboard.html'
+    };
+    const dashboardUrl = dashboardUrls[user.role] || 'student-dashboard.html';
+    window.location.href = dashboardUrl;
+}
+                document.getElementById('dashboard-preview').style.display = 'none';
+    
         // Forgot password function
         function showForgotPassword() {
             const email = prompt('Please enter your email address:');
