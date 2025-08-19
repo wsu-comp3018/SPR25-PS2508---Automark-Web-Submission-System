@@ -1,0 +1,300 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoMark System - Student Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #990033 0%, #663399 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+            width: 100%;
+            max-width: 900px;
+            min-height: 600px;
+            position: relative;
+            padding: 20px;
+        }
+
+        .form-container {
+            width: 100%;
+            text-align: center;
+        }
+
+        select {
+            padding: 10px;
+            margin: 15px;
+            border-radius: 8px;
+            border: 2px solid #e9ecef;
+            font-size: 16px;
+            width: 100%;
+            max-width: 300px;
+        }
+
+        .folder-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
+            width: 100%;
+            margin-top: 20px;
+        }
+
+        .folder {
+            background-color: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            width: 200px;
+            height: 250px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            cursor: pointer;
+            transition: 0.3s;
+        }
+
+        .folder:hover {
+            transform: scale(1.05);
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+        }
+
+        .folder h3 {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #663399;
+            text-align: center;
+        }
+
+        .folder p {
+            font-size: 14px;
+            color: #666;
+            text-align: center;
+        }
+
+        .folder-code-box {
+            margin-top: 10px;
+            text-align: center;
+        }
+
+        textarea {
+            width: 100%;
+            height: 100px;
+            padding: 10px;
+            border-radius: 8px;
+            border: 2px solid #e9ecef;
+            font-size: 14px;
+            resize: none;
+            outline: none;
+        }
+
+        button.submit-btn {
+            border-radius: 25px;
+            border: 1px solid #667eea;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #FFFFFF;
+            font-size: 14px;
+            font-weight: bold;
+            padding: 10px 30px;
+            margin-top: 10px;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+
+        button.submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        button.submit-btn:active {
+            transform: translateY(0);
+        }
+
+        input[type="file"] {
+            padding: 10px;
+            margin-top: 10px;
+            font-size: 14px;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="form-container">
+            <h1 class="form-title">Welcome to Your Dashboard</h1>
+            <p class="form-subtitle">Select your Year, Semester, Subject, and Week to begin.</p>
+
+            <div>
+                <select id="yearSelect">
+                    <option value="">Select Year</option>
+                </select>
+                <select id="semesterSelect" disabled>
+                    <option value="">Select Semester</option>
+                </select>
+                <select id="subjectSelect" disabled>
+                    <option value="">Select Subject</option>
+                </select>
+                <select id="weekSelect" disabled>
+                    <option value="">Select Week</option>
+                </select>
+            </div>
+
+            <div class="folder-container" id="folder-container">
+                <!-- Folders will be populated here dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Sample student data (this would be fetched from the database in a real application)
+        const studentData = {
+            name: "John Doe",
+            enrolledCourses: [
+                { year: 2025, semester: 'Spring', class: 'CS101', weeks: 12 },
+                { year: 2025, semester: 'Autumn', class: 'CS202', weeks: 10 },
+            ]
+        };
+
+        // Populate Year dropdown based on the student data
+        function populateYearDropdown() {
+            const yearSelect = document.getElementById('yearSelect');
+            const uniqueYears = [...new Set(studentData.enrolledCourses.map(course => course.year))];
+
+            uniqueYears.forEach(year => {
+                const option = document.createElement('option');
+                option.value = year;
+                option.textContent = `Year ${year}`;
+                yearSelect.appendChild(option);
+            });
+        }
+
+        // Populate Semester dropdown based on the selected Year
+        function populateSemesterDropdown(year) {
+            const semesterSelect = document.getElementById('semesterSelect');
+            semesterSelect.innerHTML = '<option value="">Select Semester</option>'; // reset options
+            const semesters = studentData.enrolledCourses.filter(course => course.year == year);
+
+            semesters.forEach(course => {
+                const option = document.createElement('option');
+                option.value = course.semester;
+                option.textContent = course.semester;
+                semesterSelect.appendChild(option);
+            });
+
+            semesterSelect.disabled = false; // Enable semester selection
+        }
+
+        // Populate Subject dropdown based on the selected Year and Semester
+        function populateSubjectDropdown(year, semester) {
+            const subjectSelect = document.getElementById('subjectSelect');
+            subjectSelect.innerHTML = '<option value="">Select Subject</option>'; // reset options
+            const subjects = studentData.enrolledCourses.filter(course => course.year == year && course.semester == semester);
+
+            subjects.forEach(course => {
+                const option = document.createElement('option');
+                option.value = course.class;
+                option.textContent = course.class;
+                subjectSelect.appendChild(option);
+            });
+
+            subjectSelect.disabled = false; // Enable subject selection
+        }
+
+        // Populate Week dropdown based on the selected Subject
+        function populateWeekDropdown(year, semester, subject) {
+            const weekSelect = document.getElementById('weekSelect');
+            weekSelect.innerHTML = '<option value="">Select Week</option>'; // reset options
+            const selectedCourse = studentData.enrolledCourses.find(course => course.year == year && course.semester == semester && course.class == subject);
+
+            for (let week = 1; week <= selectedCourse.weeks; week++) {
+                const option = document.createElement('option');
+                option.value = week;
+                option.textContent = `Week ${week}`;
+                weekSelect.appendChild(option);
+            }
+
+            weekSelect.disabled = false; // Enable week selection
+        }
+
+        // Function to render the folder based on selections
+        function renderFolder(year, semester, subject, week) {
+            const folderContainer = document.getElementById('folder-container');
+            folderContainer.innerHTML = ''; // Clear previous folders
+
+            const folder = document.createElement('div');
+            folder.className = 'folder';
+            folder.innerHTML = `
+                <h3>${subject} - Week ${week}</h3>
+                <p>${year} ${semester}</p>
+                <div class="folder-code-box">
+                    <textarea placeholder="Write your code here..."></textarea>
+                    <input type="file" id="fileUpload" />
+                    <button class="submit-btn">Submit Code</button>
+                </div>
+            `;
+            folderContainer.appendChild(folder);
+        }
+
+        // Event listeners for dropdown changes
+        document.getElementById('yearSelect').addEventListener('change', (e) => {
+            const year = e.target.value;
+            if (year) {
+                populateSemesterDropdown(year);
+            }
+        });
+
+        document.getElementById('semesterSelect').addEventListener('change', (e) => {
+            const semester = e.target.value;
+            const year = document.getElementById('yearSelect').value;
+            if (semester) {
+                populateSubjectDropdown(year, semester);
+            }
+        });
+
+        document.getElementById('subjectSelect').addEventListener('change', (e) => {
+            const subject = e.target.value;
+            const semester = document.getElementById('semesterSelect').value;
+            const year = document.getElementById('yearSelect').value;
+            if (subject) {
+                populateWeekDropdown(year, semester, subject);
+            }
+        });
+
+        document.getElementById('weekSelect').addEventListener('change', (e) => {
+            const week = e.target.value;
+            const subject = document.getElementById('subjectSelect').value;
+            const semester = document.getElementById('semesterSelect').value;
+            const year = document.getElementById('yearSelect').value;
+            if (week) {
+                renderFolder(year, semester, subject, week);
+            }
+        });
+
+        // Initialize the dashboard when the page is loaded
+        document.addEventListener('DOMContentLoaded', function() {
+            populateYearDropdown();
+        });
+    </script>
+</body>
+</html>
