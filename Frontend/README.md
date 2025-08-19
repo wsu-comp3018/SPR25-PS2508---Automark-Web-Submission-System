@@ -1,5 +1,6 @@
 <h1>Overview</h1>
 The frontend is a component of the AutoMark System which is a responsive web application that provides an intuitive interface for educators and students. It supports assignment submission (codes), real-time grading feedback, and comprehensive gradebook management.
+Follows UI/UX best practices to minimise user error, support quick task completion, and ensure the system is intuitive even for first-time users.
 
 <h1>Features</h1>
 
