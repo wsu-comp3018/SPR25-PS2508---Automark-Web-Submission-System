@@ -1,300 +1,607 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AutoMark System - Student Dashboard</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #990033 0%, #663399 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-
-        .container {
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-            border-radius: 20px;
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.1);
-            overflow: hidden;
-            width: 100%;
-            max-width: 900px;
-            min-height: 600px;
-            position: relative;
-            padding: 20px;
-        }
-
-        .form-container {
-            width: 100%;
-            text-align: center;
-        }
-
-        select {
-            padding: 10px;
-            margin: 15px;
-            border-radius: 8px;
-            border: 2px solid #e9ecef;
-            font-size: 16px;
-            width: 100%;
-            max-width: 300px;
-        }
-
-        .folder-container {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 20px;
-            justify-content: center;
-            width: 100%;
-            margin-top: 20px;
-        }
-
-        .folder {
-            background-color: #f8f9fa;
-            border-radius: 10px;
-            padding: 20px;
-            width: 200px;
-            height: 250px;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-            align-items: center;
-            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
-            cursor: pointer;
-            transition: 0.3s;
-        }
-
-        .folder:hover {
-            transform: scale(1.05);
-            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
-        }
-
-        .folder h3 {
-            font-size: 1.5rem;
-            font-weight: bold;
-            color: #663399;
-            text-align: center;
-        }
-
-        .folder p {
-            font-size: 14px;
-            color: #666;
-            text-align: center;
-        }
-
-        .folder-code-box {
-            margin-top: 10px;
-            text-align: center;
-        }
-
-        textarea {
-            width: 100%;
-            height: 100px;
-            padding: 10px;
-            border-radius: 8px;
-            border: 2px solid #e9ecef;
-            font-size: 14px;
-            resize: none;
-            outline: none;
-        }
-
-        button.submit-btn {
-            border-radius: 25px;
-            border: 1px solid #667eea;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: #FFFFFF;
-            font-size: 14px;
-            font-weight: bold;
-            padding: 10px 30px;
-            margin-top: 10px;
-            cursor: pointer;
-            transition: 0.3s;
-        }
-
-        button.submit-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }
-
-        button.submit-btn:active {
-            transform: translateY(0);
-        }
-
-        input[type="file"] {
-            padding: 10px;
-            margin-top: 10px;
-            font-size: 14px;
-            border: 1px solid #e9ecef;
-            border-radius: 8px;
-        }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AutoMark — Student Dashboard</title>
+  <style>
+    :root{
+      --primary:#667eea;
+      --accent:#764ba2;
+      --bg:#f4f6f8;
+      --card:#ffffff;
+      --muted:#666;
+      --danger:#e74c3c;
+      --success:#27ae60;
+      --warning:#f39c12;
+      --radius:12px;
+    }
+    *{box-sizing:border-box;font-family:'Segoe UI',Tahoma, Geneva, Verdana, sans-serif}
+    body{margin:0;background:var(--bg);padding:20px;color:#222}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+    .brand{display:flex;gap:12px;align-items:center}
+    .logo{font-size:28px;color:var(--primary)}
+    h1{margin:0;font-size:20px}
+    .controls{display:flex;gap:10px;align-items:center}
+    button{background:linear-gradient(135deg,var(--primary),var(--accent));border:none;color:#fff;padding:10px 14px;border-radius:10px;cursor:pointer;font-size:14px}
+    button:hover{opacity:0.9;transform:translateY(-1px)}
+    button:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+    button.ghost{background:transparent;border:1px solid rgba(0,0,0,0.08);color:#222}
+    button.success{background:linear-gradient(135deg,var(--success),#229954)}
+    button.warning{background:linear-gradient(135deg,var(--warning),#e67e22)}
+    button.danger{background:linear-gradient(135deg,var(--danger),#c0392b)}
+    .layout{display:grid;grid-template-columns:360px 1fr;gap:18px}
+    .panel{background:var(--card);border-radius:var(--radius);padding:16px;box-shadow:0 6px 18px rgba(0,0,0,0.04)}
+    .small{font-size:13px;color:var(--muted)}
+    .list{max-height:72vh;overflow:auto;padding-right:6px}
+    .search-box{position:relative;margin-bottom:12px}
+    .search-box input{width:100%;padding:10px 12px 10px 36px;border:1px solid #e9ecef;border-radius:10px}
+    .search-box::before{content:'🔍';position:absolute;left:12px;top:50%;transform:translateY(-50%);z-index:1}
+    .assignment{padding:10px;border-radius:8px;margin-bottom:8px;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border:1px solid #f0f0f0;transition:all 0.2s}
+    .assignment:hover{border-color:#ddd;background:#fafafa}
+    .assignment .left{display:flex;gap:10px;align-items:flex-start;flex:1}
+    .assignment .name{font-weight:600}
+    .assignment .meta{font-size:12px;color:var(--muted)}
+    .assignment .status{font-size:11px;padding:2px 6px;border-radius:4px;text-transform:uppercase}
+    .status.active{background:#e8f5e8;color:var(--success)}
+    .status.draft{background:#fff3cd;color:var(--warning)}
+    .subtree{margin-left:24px;border-left:2px solid #eee;padding-left:12px}
+    .actions{display:flex;gap:6px;flex-shrink:0}
+    .file-input{display:none}
+    .file-label{display:inline-block;padding:8px 12px;background:#f1f5ff;border-radius:8px;cursor:pointer;font-size:13px;border:1px dashed var(--primary)}
+    .file-label:hover{background:#e6edff}
+    .notification{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:8px;color:white;font-weight:500;z-index:1001;transform:translateX(400px);transition:transform 0.3s}
+    .notification.show{transform:translateX(0)}
+    .notification.success{background:var(--success)}
+    .notification.error{background:var(--danger)}
+    .notification.warning{background:var(--warning)}
+    .inline-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}
+    .inline-form .hint{font-size:12px;color:var(--muted)}
+    .badge{font-size:11px;padding:2px 6px;border-radius:4px;background:#eef2ff;color:#3949ab}
+    .grade{font-weight:700;color:#1b5e20}
+    .late{background:#ffebee;color:#c62828}
+    .file-list{margin-top:8px;padding:8px;background:#f8f9fa;border-radius:6px;border:1px solid #e9ecef}
+    .file-item{display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid #eee}
+    .file-item:last-child{border-bottom:none}
+    .file-name{font-size:12px;color:#555;flex:1}
+    .file-size{font-size:11px;color:var(--muted);margin-left:8px}
+    .file-remove{background:none;border:none;color:var(--danger);cursor:pointer;padding:2px 6px;border-radius:3px;font-size:11px}
+    .file-remove:hover{background:#ffebee}
+    .submitted-files{margin-top:6px;padding:6px 10px;background:#e8f5e8;border-radius:6px;border:1px solid #c8e6c8}
+    .submitted-file{display:flex;align-items:center;gap:8px;padding:2px 0}
+    .submitted-file .name{font-size:12px;color:#2e7d32;font-weight:500}
+    .submitted-file .download{font-size:11px;color:var(--primary);cursor:pointer;text-decoration:underline}
+    .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:16px}
+    .stat{text-align:center;padding:12px;background:#f8f9fa;border-radius:8px}
+    .stat .number{font-size:20px;font-weight:bold;color:var(--primary)}
+    .stat .label{font-size:12px;color:var(--muted);text-transform:uppercase}
+    @media (max-width:1024px){.layout{grid-template-columns:1fr}}
+    @media (max-width:768px){body{padding:10px}}
+  </style>
 </head>
 <body>
-    <div class="container">
-        <div class="form-container">
-            <h1 class="form-title">Welcome to Your Dashboard</h1>
-            <p class="form-subtitle">Select your Year, Semester, Subject, and Week to begin.</p>
-
-            <div>
-                <select id="yearSelect">
-                    <option value="">Select Year</option>
-                </select>
-                <select id="semesterSelect" disabled>
-                    <option value="">Select Semester</option>
-                </select>
-                <select id="subjectSelect" disabled>
-                    <option value="">Select Subject</option>
-                </select>
-                <select id="weekSelect" disabled>
-                    <option value="">Select Week</option>
-                </select>
-            </div>
-
-            <div class="folder-container" id="folder-container">
-                <!-- Folders will be populated here dynamically -->
-            </div>
-        </div>
+  <header>
+    <div class="brand">
+      <div class="logo">🎓 AutoMark</div>
+      <div>
+        <h1>Student Dashboard</h1>
+        <div class="small">View assignments and submit your work</div>
+      </div>
     </div>
+    <div class="controls">
+      <div class="small" id="greeting">Welcome</div>
+      <button id="runDiagBtn" class="ghost" title="Run diagnostics">Diagnostics</button>
+      <button id="logoutBtn" class="ghost">Sign out</button>
+    </div>
+  </header>
 
-    <script>
-        // Sample student data (this would be fetched from the database in a real application)
-        const studentData = {
-            name: "John Doe",
-            enrolledCourses: [
-                { year: 2025, semester: 'Spring', class: 'CS101', weeks: 12 },
-                { year: 2025, semester: 'Autumn', class: 'CS202', weeks: 10 },
-            ]
+  <div class="stats">
+    <div class="stat"><div class="number" id="statActive">0</div><div class="label">Active Tasks</div></div>
+    <div class="stat"><div class="number" id="statSubmitted">0</div><div class="label">My Submissions</div></div>
+    <div class="stat"><div class="number" id="statDueSoon">0</div><div class="label">Due in 7 Days</div></div>
+    <div class="stat"><div class="number" id="statGraded">0</div><div class="label">Graded</div></div>
+  </div>
+
+  <div class="layout">
+    <aside class="panel">
+      <h3 style="margin-top:0">Assigned to Me</h3>
+      <div class="small">Only assignments that your lecturer has made <strong>Active</strong> and assigned to you are shown.</div>
+
+      <div class="search-box" style="margin-top:12px">
+        <input id="searchBox" placeholder="Search by name or description..." />
+      </div>
+
+      <div id="sidebarList" class="list"></div>
+    </aside>
+
+    <main class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">Assignments</h3>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="small">Tip: Click folders to expand</span>
+        </div>
+      </div>
+      <div id="mainList" class="list"></div>
+    </main>
+  </div>
+
+  <div id="notification" class="notification"></div>
+
+<script>
+/********************
+ * Storage Contracts *
+ ********************/
+const STORAGE_FOLDERS = 'automark_folders';
+const STORAGE_SUBS     = 'automark_submissions';
+const USERS_KEY        = 'automark_users';
+const SESSION_KEY      = 'automark_user';
+const FILES_KEY        = 'automark_files';
+
+/********************
+ * Utilities         *
+ ********************/
+const $ = (id)=> document.getElementById(id);
+const loadJSON = (key, fallback=[]) => { try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); } catch(e){ return fallback; } };
+const saveJSON = (key, obj) => localStorage.setItem(key, JSON.stringify(obj));
+const uid = (p='id') => p + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8);
+
+function fmtDate(iso){ try{ return new Date(iso).toLocaleString(); }catch{ return '—'; } }
+function fmtDateShort(iso){ try{ return new Date(iso).toLocaleDateString(); }catch{ return '—'; } }
+function daysUntil(iso){ if(!iso) return Infinity; const d = (new Date(iso) - new Date())/(1000*60*60*24); return Math.ceil(d); }
+
+function showNote(msg, type='success'){
+  const n = $('notification');
+  n.textContent = msg; n.className = `notification ${type} show`;
+  setTimeout(()=> n.classList.remove('show'), 3000);
+}
+
+/********************
+ * Session Guard     *
+ ********************/
+const currentUser = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+if(!currentUser || currentUser.role !== 'student'){
+  alert('Not signed in as student. Redirecting to login.');
+  window.location.href = 'Login and Registration.html';
+}
+$('greeting').textContent = `Hi, ${currentUser.firstName || currentUser.username}`;
+
+/********************
+ * File Helpers      *
+ ********************/
+const selectedFiles = new Map(); // Store selected files temporarily
+
+function saveFiles(files){
+  return new Promise((resolve) => {
+    const fileIds = [];
+    if(!files || files.length===0) return resolve([]);
+    let processed = 0;
+    Array.from(files).forEach(f => {
+      const reader = new FileReader();
+      reader.onload = e => {
+        const data = {
+          id: uid('file'), 
+          name: f.name, 
+          type: f.type, 
+          size: f.size, 
+          lastModified: f.lastModified,
+          content: String(e.target.result).split(',')[1]
         };
+        const all = loadJSON(FILES_KEY, []); 
+        all.push(data); 
+        saveJSON(FILES_KEY, all);
+        fileIds.push(data.id);
+        processed++; 
+        if(processed===files.length) resolve(fileIds);
+      };
+      reader.readAsDataURL(f);
+    });
+  });
+}
 
-        // Populate Year dropdown based on the student data
-        function populateYearDropdown() {
-            const yearSelect = document.getElementById('yearSelect');
-            const uniqueYears = [...new Set(studentData.enrolledCourses.map(course => course.year))];
+function getFile(fileId){ 
+  return loadJSON(FILES_KEY, []).find(f => f.id === fileId); 
+}
 
-            uniqueYears.forEach(year => {
-                const option = document.createElement('option');
-                option.value = year;
-                option.textContent = `Year ${year}`;
-                yearSelect.appendChild(option);
-            });
-        }
+function downloadFile(fileId, fileName){ 
+  const f=getFile(fileId); 
+  if(!f) return; 
+  const a=document.createElement('a'); 
+  a.href=`data:${f.type};base64,${f.content}`; 
+  a.download=fileName||f.name; 
+  document.body.appendChild(a); 
+  a.click(); 
+  a.remove(); 
+}
 
-        // Populate Semester dropdown based on the selected Year
-        function populateSemesterDropdown(year) {
-            const semesterSelect = document.getElementById('semesterSelect');
-            semesterSelect.innerHTML = '<option value="">Select Semester</option>'; // reset options
-            const semesters = studentData.enrolledCourses.filter(course => course.year == year);
+function formatFileSize(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
 
-            semesters.forEach(course => {
-                const option = document.createElement('option');
-                option.value = course.semester;
-                option.textContent = course.semester;
-                semesterSelect.appendChild(option);
-            });
+/********************
+ * Data Access       *
+ ********************/
+const expanded = new Set();
+const allUsers = loadJSON(USERS_KEY, []);
+const getFolders = () => loadJSON(STORAGE_FOLDERS, []);
+const getSubs    = () => loadJSON(STORAGE_SUBS, []);
+const saveSubs   = (s) => saveJSON(STORAGE_SUBS, s);
 
-            semesterSelect.disabled = false; // Enable semester selection
-        }
+function isAssignedToMe(folder){ return Array.isArray(folder.assignedTo) && folder.assignedTo.map(String).includes(String(currentUser.id)); }
+function isActive(folder){ return (folder.status||'draft') === 'active'; }
 
-        // Populate Subject dropdown based on the selected Year and Semester
-        function populateSubjectDropdown(year, semester) {
-            const subjectSelect = document.getElementById('subjectSelect');
-            subjectSelect.innerHTML = '<option value="">Select Subject</option>'; // reset options
-            const subjects = studentData.enrolledCourses.filter(course => course.year == year && course.semester == semester);
+function findById(list, id){
+  for(const f of list){ if(f.id===id) return f; if(f.subfolders?.length){ const x=findById(f.subfolders,id); if(x) return x; } }
+  return null;
+}
 
-            subjects.forEach(course => {
-                const option = document.createElement('option');
-                option.value = course.class;
-                option.textContent = course.class;
-                subjectSelect.appendChild(option);
-            });
+/** Returns all nodes (folders and subfolders) visible to the current student.
+ *  A node is visible if: node.status==='active' AND (node.assignedTo includes me).
+ *  Parent nodes that are not assigned but have visible children are also shown as context, but are not actionable.
+ */
+function computeVisibleTree(){
+  const roots = getFolders();
+  function walk(node){
+    const children = (node.subfolders||[]).map(walk).filter(Boolean);
+    const meAssigned = isAssignedToMe(node) && isActive(node);
+    const hasVisibleChild = children.length>0;
+    if(meAssigned || hasVisibleChild){
+      return { ...node, subfolders: children, __meAssigned: meAssigned };
+    }
+    return null;
+  }
+  return roots.map(walk).filter(Boolean);
+}
 
-            subjectSelect.disabled = false; // Enable subject selection
-        }
+/********************
+ * File UI Management *
+ ********************/
+function updateFileList(folderId) {
+  const container = document.querySelector(`[data-file-list="${folderId}"]`);
+  if (!container) return;
+  
+  const files = selectedFiles.get(folderId) || [];
+  
+  if (files.length === 0) {
+    container.innerHTML = '<div class="small" style="color: #999; font-style: italic;">No files selected</div>';
+    return;
+  }
+  
+  container.innerHTML = files.map((file, index) => `
+    <div class="file-item">
+      <span class="file-name">${file.name}</span>
+      <span class="file-size">${formatFileSize(file.size)}</span>
+      <button class="file-remove" onclick="removeFile('${folderId}', ${index})" title="Remove file">×</button>
+    </div>
+  `).join('');
+}
 
-        // Populate Week dropdown based on the selected Subject
-        function populateWeekDropdown(year, semester, subject) {
-            const weekSelect = document.getElementById('weekSelect');
-            weekSelect.innerHTML = '<option value="">Select Week</option>'; // reset options
-            const selectedCourse = studentData.enrolledCourses.find(course => course.year == year && course.semester == semester && course.class == subject);
+function removeFile(folderId, index) {
+  const files = selectedFiles.get(folderId) || [];
+  files.splice(index, 1);
+  if (files.length === 0) {
+    selectedFiles.delete(folderId);
+  } else {
+    selectedFiles.set(folderId, files);
+  }
+  updateFileList(folderId);
+}
 
-            for (let week = 1; week <= selectedCourse.weeks; week++) {
-                const option = document.createElement('option');
-                option.value = week;
-                option.textContent = `Week ${week}`;
-                weekSelect.appendChild(option);
-            }
+function addFiles(folderId, newFiles) {
+  if (!newFiles || newFiles.length === 0) return;
+  
+  const existingFiles = selectedFiles.get(folderId) || [];
+  const allFiles = [...existingFiles];
+  
+  Array.from(newFiles).forEach(file => {
+    // Check for duplicate names
+    if (!allFiles.some(existing => existing.name === file.name)) {
+      allFiles.push(file);
+    }
+  });
+  
+  selectedFiles.set(folderId, allFiles);
+  updateFileList(folderId);
+}
 
-            weekSelect.disabled = false; // Enable week selection
-        }
+/********************
+ * Rendering         *
+ ********************/
+function render(){
+  const tree = computeVisibleTree();
+  const query = ($('searchBox').value||'').toLowerCase();
 
-        // Function to render the folder based on selections
-        function renderFolder(year, semester, subject, week) {
-            const folderContainer = document.getElementById('folder-container');
-            folderContainer.innerHTML = ''; // Clear previous folders
+  const main = $('mainList'); main.innerHTML='';
+  const side = $('sidebarList'); side.innerHTML='';
 
-            const folder = document.createElement('div');
-            folder.className = 'folder';
-            folder.innerHTML = `
-                <h3>${subject} - Week ${week}</h3>
-                <p>${year} ${semester}</p>
-                <div class="folder-code-box">
-                    <textarea placeholder="Write your code here..."></textarea>
-                    <input type="file" id="fileUpload" />
-                    <button class="submit-btn">Submit Code</button>
-                </div>
-            `;
-            folderContainer.appendChild(folder);
-        }
+  if(tree.length===0){
+    main.innerHTML = '<div class="small">No active assignments yet. If you were recently enrolled, your lecturer may still be preparing them.</div>';
+  }
 
-        // Event listeners for dropdown changes
-        document.getElementById('yearSelect').addEventListener('change', (e) => {
-            const year = e.target.value;
-            if (year) {
-                populateSemesterDropdown(year);
-            }
-        });
+  let activeCount=0, submittedCount=0, dueSoon=0, graded=0;
+  const mySubs = getSubs().filter(s => s.studentId === String(currentUser.id));
 
-        document.getElementById('semesterSelect').addEventListener('change', (e) => {
-            const semester = e.target.value;
-            const year = document.getElementById('yearSelect').value;
-            if (semester) {
-                populateSubjectDropdown(year, semester);
-            }
-        });
+  function renderNode(container, node, level=0, parentPath=''){
+    const path = parentPath ? parentPath + ' / ' + node.name : node.name;
+    const matches = !query || path.toLowerCase().includes(query) || (node.description||'').toLowerCase().includes(query);
+    if(!matches) return; // filter
 
-        document.getElementById('subjectSelect').addEventListener('change', (e) => {
-            const subject = e.target.value;
-            const semester = document.getElementById('semesterSelect').value;
-            const year = document.getElementById('yearSelect').value;
-            if (subject) {
-                populateWeekDropdown(year, semester, subject);
-            }
-        });
+    const hasChildren = (node.subfolders||[]).length>0;
+    const open = expanded.has(node.id);
+    const icon = hasChildren ? (open ? '📂' : '📁') : '📄';
 
-        document.getElementById('weekSelect').addEventListener('change', (e) => {
-            const week = e.target.value;
-            const subject = document.getElementById('subjectSelect').value;
-            const semester = document.getElementById('semesterSelect').value;
-            const year = document.getElementById('yearSelect').value;
-            if (week) {
-                renderFolder(year, semester, subject, week);
-            }
-        });
+    // Stats counters
+    if(node.__meAssigned){
+      activeCount++;
+      if(daysUntil(node.dueDate) <= 7) dueSoon++;
+      const sub = mySubs.find(s => s.folderId===node.id);
+      if(sub){ submittedCount++; if(sub.graded) graded++; }
+    }
 
-        // Initialize the dashboard when the page is loaded
-        document.addEventListener('DOMContentLoaded', function() {
-            populateYearDropdown();
-        });
-    </script>
+    const wrapper = document.createElement('div');
+    wrapper.className = 'assignment';
+    wrapper.style.paddingLeft = (level*16)+'px';
+
+    const due = node.dueDate ? `Due: ${fmtDateShort(node.dueDate)}` : 'No due date';
+    const points = node.maxPoints ? `${node.maxPoints} pts` : '—';
+    const mat = Array.isArray(node.fileIds) && node.fileIds.length>0 ? `${node.fileIds.length} file(s)` : 'No materials';
+
+    wrapper.innerHTML = `
+      <div class="left">
+        <div style="display:flex;gap:8px;align-items:center;cursor:${hasChildren?'pointer':'default'}" data-toggle="${hasChildren?node.id:''}">
+          <span style="font-size:12px">${icon}</span>
+          <span class="name">${node.name}</span>
+        </div>
+        <div class="meta">
+          <span class="status ${isActive(node)?'active':'draft'}">${isActive(node)?'Active':'Draft'}</span>
+          ${node.__meAssigned?'<span class="badge">Assigned to you</span>':''}
+          • ${due} • ${points} • Materials: ${mat}
+        </div>
+        ${node.description?`<div class="small" style="margin-top:4px">${node.description}</div>`:''}
+
+        ${node.fileIds?.length?`<div class="small" style="margin-top:6px">`+node.fileIds.map(fid=>`<a href="#" class="link" data-download-mat="${fid}" title="Download material">${(getFile(fid)||{}).name||'file'}</a>`).join(' • ')+`</div>`:''}
+
+        ${node.__meAssigned ? (hasChildren ? '<div class="small" style="margin-top:6px;color:#999">Submissions are only allowed in the <strong>last child folder</strong>. Open a child folder to submit.</div>' : renderInlineSubmission(node)) : '<div class="small" style="margin-top:6px;color:#999">Visible for context (not assigned to you).</div>'}
+      </div>
+      <div class="actions">
+        ${hasChildren?`<button class="ghost" data-toggle="${node.id}">${open?'Collapse':'Expand'}</button>`:''}
+      </div>`;
+
+    container.appendChild(wrapper);
+
+    // children
+    if(hasChildren && open){
+      const subtree = document.createElement('div');
+      subtree.className = 'subtree';
+      node.subfolders.forEach(child => renderNode(subtree, child, level+1, path));
+      container.appendChild(subtree);
+    }
+  }
+
+  function renderSidebar(node, level=0, parentPath=''){
+    const path = parentPath? parentPath+' / '+node.name : node.name;
+    const row = document.createElement('div');
+    row.className = 'assignment';
+    row.style.paddingLeft = (level*12)+'px';
+    row.innerHTML = `<div class="left"><span class="name">${path}</span><div class="meta">${node.__meAssigned?'<span class="badge">Mine</span>':''} • ${node.dueDate?('Due '+fmtDateShort(node.dueDate)):'No due'}</div></div>`;
+    side.appendChild(row);
+    (node.subfolders||[]).forEach(ch => renderSidebar(ch, level+1, path));
+  }
+
+  // Main + sidebar render
+  tree.forEach(node => { renderNode(main, node, 0, ''); renderSidebar(node); });
+
+  // Stats
+  $('statActive').textContent = activeCount;
+  $('statSubmitted').textContent = submittedCount;
+  $('statDueSoon').textContent = dueSoon;
+  $('statGraded').textContent = graded;
+}
+
+/********************
+ * Inline Submission *
+ ********************/
+function renderInlineSubmission(node){
+  const allSubs = getSubs();
+  const existing = allSubs.find(s => s.folderId===node.id && s.studentId===String(currentUser.id));
+  const late = node.dueDate && new Date() > new Date(node.dueDate);
+  const gradeLine = existing?.graded ? `<span class="grade">Grade: ${existing.grade ?? '—'}</span>${existing.feedback?` • Feedback: ${existing.feedback}`:''}` : '';
+
+  // Show submitted files
+  const submittedFilesHtml = existing?.fileIds?.length ? `
+    <div class="submitted-files">
+      <div class="small" style="font-weight: 500; margin-bottom: 4px;">📎 Submitted Files:</div>
+      ${existing.fileIds.map(fid => {
+        const file = getFile(fid);
+        return file ? `
+          <div class="submitted-file">
+            <span class="name">${file.name}</span>
+            <span class="download" onclick="downloadFile('${fid}')">Download</span>
+          </div>
+        ` : '';
+      }).join('')}
+    </div>
+  ` : '';
+
+  return `
+    <form class="inline-form" data-submission-form="${node.id}" onsubmit="return false;">
+      <input type="file" id="file-${node.id}" class="file-input" multiple accept="*/*" />
+      <label class="file-label" for="file-${node.id}">${existing? 'Add more files…' : 'Choose files…'}</label>
+      <button class="${existing ? 'warning' : 'success'}" data-submit="${node.id}">${existing? 'Update Submission' : 'Submit'}</button>
+      ${existing?`<button class="ghost" data-download-sub="${existing.id}">My Files</button>
+                  <button class="ghost danger" data-delete-sub="${existing.id}">Delete</button>`:''}
+      
+      <div class="file-list" data-file-list="${node.id}" style="width: 100%; margin-top: 8px;">
+        <div class="small" style="color: #999; font-style: italic;">No files selected</div>
+      </div>
+      
+      <span class="hint">${existing?`Submitted: ${fmtDate(existing.submittedAt)}`:'No submission yet'}</span>
+      ${late?`<span class="status late" title="Past due">LATE</span>`:''}
+      ${gradeLine}
+      ${submittedFilesHtml}
+    </form>
+  `;
+}
+
+/********************
+ * Submission Logic  *
+ ********************/
+async function handleSubmit(folderId){
+  // Guard: must still be assigned and must be a leaf folder
+  const folder = findById(getFolders(), folderId);
+  if(!folder){ return showNote('Assignment not found', 'error'); }
+  if(!isActive(folder) || !isAssignedToMe(folder)){
+    return showNote('You are not allowed to submit to this assignment.', 'error');
+  }
+  if(folder.subfolders && folder.subfolders.length){
+    return showNote('You can only submit to the final child folder.', 'error');
+  }
+
+  // Check for selected files
+  const selectedFilesForFolder = selectedFiles.get(folderId) || [];
+  if(selectedFilesForFolder.length === 0){ 
+    return showNote('Please choose at least one file to upload', 'warning'); 
+  }
+
+  const fileIds = await saveFiles(selectedFilesForFolder);
+  const subs = getSubs();
+  let me = subs.find(s => s.folderId===folderId && s.studentId===String(currentUser.id));
+  
+  if(me){
+    // Append files to existing submission
+    me.fileIds = (me.fileIds||[]).concat(fileIds);
+    me.submittedAt = new Date().toISOString();
+    me.revisions = (me.revisions||0)+1;
+  } else {
+    me = {
+      id: uid('sub'),
+      folderId: folderId,
+      subfolderId: null,
+      studentId: String(currentUser.id),
+      submittedAt: new Date().toISOString(),
+      fileIds,
+      graded: false,
+      grade: null,
+      feedback: ''
+    };
+    subs.push(me);
+  }
+  
+  saveSubs(subs);
+  
+  // Clear selected files after successful submission
+  selectedFiles.delete(folderId);
+  
+  showNote(`Submission saved successfully! ${fileIds.length} file(s) uploaded.`);
+  render();
+}
+
+function downloadMySubmission(subId){
+  const sub = getSubs().find(s => s.id===subId && s.studentId===String(currentUser.id));
+  if(!sub){ return showNote('Submission not found', 'error'); }
+  if(!sub.fileIds?.length){ return showNote('No files in this submission', 'warning'); }
+  // Download each file individually
+  sub.fileIds.forEach(fid => downloadFile(fid));
+  showNote(`Downloading ${sub.fileIds.length} file(s)...`);
+}
+
+function deleteMySubmission(subId){
+  const subs = getSubs();
+  const idx = subs.findIndex(s => s.id===subId && s.studentId===String(currentUser.id));
+  if(idx===-1) return showNote('Submission not found', 'error');
+  if(!confirm('Delete your submission? This only unlinks the files from this submission.')) return;
+  subs.splice(idx,1); saveSubs(subs); showNote('Submission deleted'); render();
+}
+
+/********************
+ * Event Wiring      *
+ ********************/
+document.addEventListener('DOMContentLoaded', () => {
+  render();
+
+  // searching
+  $('searchBox').addEventListener('input', render);
+
+  // File input handling
+  document.addEventListener('change', (e) => {
+    if (e.target.matches('.file-input')) {
+      const folderId = e.target.id.replace('file-', '');
+      addFiles(folderId, e.target.files);
+      // Clear the input to allow re-selecting the same files
+      e.target.value = '';
+    }
+  });
+
+  // delegation for expand/collapse + materials download + submission actions
+  document.body.addEventListener('click', async (e) => {
+    const t = e.target;
+
+    // toggle tree
+    const tid = t.getAttribute('data-toggle');
+    if(tid){ expanded.has(tid)? expanded.delete(tid) : expanded.add(tid); render(); }
+
+    // download lecturer material
+    const mat = t.getAttribute('data-download-mat');
+    if(mat){ e.preventDefault(); downloadFile(mat); }
+
+    // submit/update submission
+    const subFor = t.getAttribute('data-submit');
+    if(subFor){
+      e.preventDefault();
+      await handleSubmit(subFor);
+    }
+
+    // download my submission files
+    const dsub = t.getAttribute('data-download-sub');
+    if(dsub){ e.preventDefault(); downloadMySubmission(dsub); }
+
+    // delete my submission
+    const del = t.getAttribute('data-delete-sub');
+    if(del){ e.preventDefault(); deleteMySubmission(del); }
+  });
+
+  // listen to storage changes (another tab/lecturer updates)
+  window.addEventListener('storage', (ev) => {
+    if([STORAGE_FOLDERS, STORAGE_SUBS, FILES_KEY].includes(ev.key)) render();
+  });
+
+  // logout
+  $('logoutBtn').addEventListener('click', () => {
+    localStorage.removeItem('automark_token');
+    localStorage.removeItem('automark_user');
+    window.location.href = 'Login and Registration.html';
+  });
+
+  // diagnostics
+  $('runDiagBtn').addEventListener('click', runDiagnostics);
+});
+
+/********************
+ * Diagnostics       *
+ ********************/
+function runDiagnostics(){
+  const errs=[]; const warn=[];
+  try{
+    if(!currentUser) errs.push('No session user.');
+    if(currentUser && currentUser.role!=='student') errs.push('Session is not a student.');
+
+    const folders = getFolders();
+    if(!Array.isArray(folders)) errs.push('Folders storage is not an array.');
+
+    const subs = getSubs();
+    if(!Array.isArray(subs)) errs.push('Submissions storage is not an array.');
+
+    // Tree compute should not throw
+    computeVisibleTree();
+
+  }catch(e){ errs.push('Exception during diagnostics: '+(e?.message||e)); }
+
+  if(errs.length){ console.error('[Diagnostics errors]', errs); showNote('Diagnostics: '+errs.join(' | '), 'error'); }
+  else{ console.info('[Diagnostics warnings]', warn); showNote('Diagnostics passed. '+(warn.length?('Warnings: '+warn.join(' | ')):'All good.'),'success'); }
+}
+</script>
 </body>
 </html>
