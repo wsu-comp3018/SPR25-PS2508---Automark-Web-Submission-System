@@ -90,6 +90,13 @@
     .search-box::before{content:'🔍';position:absolute;left:12px;top:50%;transform:translateY(-50%);z-index:1}
     .toggle-btn{background:transparent;border:1px solid var(--primary);color:var(--primary);padding:4px 8px;border-radius:4px;font-size:12px}
     .toggle-btn.active{background:var(--primary);color:white}
+    .file-list{margin-top:8px;padding:8px;background:#f8f9fa;border-radius:6px;border:1px solid #e9ecef}
+    .file-item{display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid #eee}
+    .file-item:last-child{border-bottom:none}
+    .file-name{font-size:12px;color:#555;flex:1}
+    .file-size{font-size:11px;color:var(--muted);margin-left:8px}
+    .grade-badge{background:#e8f5e8;color:#27ae60;padding:2px 6px;border-radius:4px;font-size:11px;text-transform:uppercase}
+    .grading-form{margin-top:12px;padding-top:12px;border-top:1px solid #eee}
     @media (max-width:1024px){.layout{grid-template-columns:1fr}}
     @media (max-width:768px){
       body{padding:10px}
@@ -237,6 +244,45 @@
     </main>
   </div>
 
+  <!-- Grading Modal -->
+  <div id="gradingModal" class="modal" style="display:none">
+    <div class="modal-content">
+      <h3 style="margin-top:0">Grade Submission</h3>
+      
+      <div class="form-group">
+        <label>Student: <span id="gradingStudentName"></span></label>
+      </div>
+      
+      <div class="form-group">
+        <label>Assignment: <span id="gradingAssignmentName"></span></label>
+      </div>
+      
+      <div class="form-group">
+        <label>Submitted Files</label>
+        <div id="gradingFileList" class="file-list"></div>
+      </div>
+      
+      <div class="form-row">
+        <div class="form-group">
+          <label>Score</label>
+          <input type="number" id="submissionScore" min="0" />
+          <span> out of <span id="maxScore">100</span> points</span>
+        </div>
+      </div>
+      
+      <div class="form-group">
+        <label>Feedback/Comments</label>
+        <textarea id="submissionFeedback" rows="4" placeholder="Provide feedback to the student..."></textarea>
+      </div>
+      
+      <div class="modal-actions">
+        <button id="cancelGradingBtn" class="ghost">Cancel</button>
+        <button id="saveGradingBtn" class="success">Save Grade</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Other modals (subfolder, edit assignment, bulk assign) remain the same -->
   <!-- Subfolder Creation -->
   <div id="subfolderModal" class="modal" style="display:none">
     <div class="modal-content">
@@ -756,11 +802,18 @@ function renderSubmissions(folderId, subfolderId=null){
     const div = document.createElement('div');
     div.className = 'folder';
     div.style.marginBottom = '12px';
+    
+    // Grade status
+    const gradeStatus = sub.graded ? 
+      `<span class="grade-badge">Graded: ${sub.grade}/${folder.maxPoints || 'N/A'}</span>` : 
+      '<span class="status" style="background:#fff3cd;color:#f39c12">Pending</span>';
+    
     div.innerHTML = `
       <div class="left">
         <div style="display:flex;align-items:center;gap:8px">
           <span class="name">${student?.firstName || student?.username || 'Unknown'}</span>
           ${isLate ? '<span class="status" style="background:#ffebee;color:#c62828">LATE</span>' : ''}
+          ${gradeStatus}
         </div>
         <div class="meta">
           ${student?.email || 'No email'} • 
@@ -878,6 +931,114 @@ function cloneSubfolders(subfolders) {
     assignedTo: [],
     subfolders: cloneSubfolders(sub.subfolders || [])
   }));
+}
+
+// Grading functions
+function openGradingModal(submissionId) {
+  const subs = getSubs();
+  const submission = subs.find(s => s.id === submissionId);
+  if (!submission) return;
+  
+  const student = allUsers.find(u => u.id === submission.studentId);
+  const folder = findFolderById(getFolders(), submission.folderId);
+  const subfolder = submission.subfolderId ? 
+    findFolderById(getFolders(), submission.subfolderId) : null;
+  
+  // Populate modal with data
+  $('gradingStudentName').textContent = student?.firstName || student?.username || 'Unknown';
+  $('gradingAssignmentName').textContent = subfolder ? 
+    `${folder.name} → ${subfolder.name}` : folder.name;
+  
+  // Set max score
+  const maxPoints = subfolder ? subfolder.maxPoints : folder.maxPoints;
+  $('maxScore').textContent = maxPoints || '100';
+  $('submissionScore').max = maxPoints || 100;
+  
+  // Set current grade if exists
+  $('submissionScore').value = submission.grade || '';
+  $('submissionFeedback').value = submission.feedback || '';
+  
+  // Show submitted files
+  const fileList = $('gradingFileList');
+  fileList.innerHTML = '';
+  
+  if (submission.fileIds && submission.fileIds.length > 0) {
+    submission.fileIds.forEach(fileId => {
+      const file = getFile(fileId);
+      if (file) {
+        const fileItem = document.createElement('div');
+        fileItem.className = 'file-item';
+        fileItem.innerHTML = `
+          <span class="file-name">${file.name}</span>
+          <a href="#" class="download" onclick="downloadFile('${fileId}', '${file.name}'); return false;">Download</a>
+        `;
+        fileList.appendChild(fileItem);
+      }
+    });
+  } else {
+    fileList.innerHTML = '<div class="muted">No files submitted</div>';
+  }
+  
+  // Store submission ID in modal dataset
+  $('gradingModal').dataset.submissionId = submissionId;
+  $('gradingModal').style.display = 'flex';
+}
+
+function saveGrade() {
+  const submissionId = $('gradingModal').dataset.submissionId;
+  const score = parseInt($('submissionScore').value);
+  const feedback = $('submissionFeedback').value.trim();
+  
+  if (isNaN(score)) {
+    showNotification('Please enter a valid score', 'error');
+    return;
+  }
+  
+  const subs = getSubs();
+  const submissionIndex = subs.findIndex(s => s.id === submissionId);
+  
+  if (submissionIndex === -1) {
+    showNotification('Submission not found', 'error');
+    return;
+  }
+  
+  // Update submission with grade and feedback
+  subs[submissionIndex].grade = score;
+  subs[submissionIndex].feedback = feedback;
+  subs[submissionIndex].graded = true;
+  subs[submissionIndex].gradedAt = new Date().toISOString();
+  
+  saveSubs(subs);
+  showNotification('Grade saved successfully!');
+  $('gradingModal').style.display = 'none';
+  
+  // Refresh the view if we're in submissions view
+  if ($('subViewer').style.display !== 'none') {
+    const folderName = $('subViewerFolderName').textContent;
+    const folders = getFolders();
+    const folder = folders.find(f => f.name === folderName);
+    if(folder) renderSubmissions(folder.id);
+  }
+}
+
+// Format filename for download
+function formatDownloadFileName(fileId, submission, student) {
+  const file = getFile(fileId);
+  if (!file) return 'file';
+  
+  const baseName = file.name.replace(/\.[^/.]+$/, "");
+  const extension = file.name.includes('.') ? file.name.split('.').pop() : '';
+  
+  // Format timestamp for filename (remove special characters)
+  const timestamp = new Date(submission.submittedAt).toISOString()
+    .replace(/[:.]/g, '-')
+    .replace('T', '_')
+    .substring(0, 19);
+  
+  // Get grade if exists
+  const grade = submission.graded ? `_${submission.grade}` : '_ungraded';
+  
+  return `${baseName}_${student.username}_${timestamp}${grade}.${extension}`;
 }
 
 // Event listeners
@@ -1038,13 +1199,12 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault();
       const sub = getSubs().find(s => s.id === id);
       if(sub && sub.fileIds?.length > 0){
+        const student = allUsers.find(u => u.id === sub.studentId);
         sub.fileIds.forEach((fileId, index) => {
-          const file = getFile(fileId);
-          if(file) {
-            setTimeout(() => {
-              downloadFile(fileId, `submission_${sub.studentId}_${index + 1}_${file.name}`);
-            }, index * 100); 
-          }
+          const fileName = formatDownloadFileName(fileId, sub, student);
+          setTimeout(() => {
+            downloadFile(fileId, fileName);
+          }, index * 100); 
         });
         showNotification(`Downloading ${sub.fileIds.length} file(s)...`);
       } else {
@@ -1052,8 +1212,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
     else if(action === 'grade'){
-      showNotification('Grading feature coming soon!', 'warning');
-      // TODO: Implement grading modal
+      openGradingModal(id);
     }
     else if(action === 'delete-sub'){
       if(!confirm('Delete this submission? This cannot be undone.')) return;
@@ -1091,16 +1250,13 @@ document.addEventListener('DOMContentLoaded', () => {
     let downloadCount = 0;
     folderSubs.forEach((sub, subIndex) => {
       if(sub.fileIds?.length > 0) {
+        const student = allUsers.find(u => u.id === sub.studentId);
         sub.fileIds.forEach((fileId, fileIndex) => {
-          const file = getFile(fileId);
-          if(file) {
-            const student = allUsers.find(u => u.id === sub.studentId);
-            const studentName = student?.firstName || student?.username || 'Unknown';
-            setTimeout(() => {
-              downloadFile(fileId, `${studentName}_${subIndex + 1}_${fileIndex + 1}_${file.name}`);
-            }, downloadCount * 200);
-            downloadCount++;
-          }
+          const fileName = formatDownloadFileName(fileId, sub, student);
+          setTimeout(() => {
+            downloadFile(fileId, fileName);
+          }, downloadCount * 200);
+          downloadCount++;
         });
       }
     });
@@ -1111,6 +1267,13 @@ document.addEventListener('DOMContentLoaded', () => {
       showNotification('No files found in submissions', 'warning');
     }
   });
+  
+  // Grading actions
+  $('cancelGradingBtn').addEventListener('click', () => {
+    $('gradingModal').style.display = 'none';
+  });
+  
+  $('saveGradingBtn').addEventListener('click', saveGrade);
   
   // Subfolder actions
   $('cancelSubfolderBtn').addEventListener('click', () => {
@@ -1292,13 +1455,11 @@ document.addEventListener('DOMContentLoaded', () => {
     showNotification('Data exported successfully!');
   });
   
- 
-  
   // Logout
   $('logoutBtn').addEventListener('click', () => {
     if(confirm('Are you sure you want to sign out?')) {
       localStorage.removeItem(SESSION_KEY);
-      location.href = 'login&register.html';
+      location.href = 'Login and Registration.html';
     }
   });
   
