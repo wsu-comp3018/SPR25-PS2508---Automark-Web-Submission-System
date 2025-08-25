@@ -1012,10 +1012,10 @@ document.getElementById('signinForm').addEventListener('submit', async function(
         // Redirect to appropriate dashboard based on user role 
        function redirectToDashboard(user) {
     const dashboardUrls = {
-        'student': 'student-dashboard.html', //For successful navigation the name of the file here will need to be changed if Laura's student dashboard file is named something else
+        'student': 'studentdash.html', //For successful navigation the name of the file here will need to be changed if Laura's student dashboard file is named something else
         'lecturer': 'lecturer-dashboard.html'
     };
-    const dashboardUrl = dashboardUrls[user.role] || 'student-dashboard.html';
+    const dashboardUrl = dashboardUrls[user.role] || 'studentdash.html';
     window.location.href = dashboardUrl;
 }
                 document.getElementById('dashboard-preview').style.display = 'none';
@@ -1291,5 +1291,6 @@ document.getElementById('signinForm').addEventListener('submit', async function(
         //  tooltips
         addTooltips();
     </script>
+<script type="module" src="js/pages/login-register.js"></script>
 </body>
 </html>
