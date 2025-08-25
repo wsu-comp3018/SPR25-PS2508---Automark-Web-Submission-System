@@ -15,3 +15,9 @@ At this stage, only the **minimal structure** is set up.
 ## Notes
 - More modules (runner, queue, models, utils, etc.) will be added in later milestones.  
 - This lean skeleton ensures the repo stays lightweight while allowing incremental growth.
+
+
+- how to run
+- Share with the team:
+Backend: make -C Backend/server quickstart (first run), then make -C Backend/server dev
+Frontend: cd Frontend && python3 -m http.server 5500 (no frontend Makefile needed)
