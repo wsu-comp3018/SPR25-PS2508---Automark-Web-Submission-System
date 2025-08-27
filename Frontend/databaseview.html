@@ -86,6 +86,29 @@
     }
   </style>
 </head>
+<body>
+  <h1>Registered Users</h1>
+  <table id="userTable">
+    <thead>
+      <tr>
+        <th><input type="checkbox" id="selectAll" /></th>
+        <th>No.</th>
+        <th>Username</th>
+        <th>Email</th>
+        <th>Role</th>
+        <th>Full Name</th>
+        <th>Status</th>
+        <th>Subject</th>
+        <th>Created At</th>
+      </tr>
+    </thead>
+    <tbody>
+    </tbody>
+  </table>
+
+  <button class="danger-button" onclick="deleteSelectedUsers()">Delete Selected Users</button>
+  <button class="danger-button" onclick="resetDatabase()">Delete All Users</button>
+
   <script>
     const users = JSON.parse(localStorage.getItem('automark_users')) || [];
     const tableBody = document.querySelector('#userTable tbody');
@@ -113,11 +136,14 @@
       <td class="${user.isActive ? 'status-active' : 'status-inactive'}">
         ${user.isActive ? 'Active' : 'Inactive'}
       </td>
+      <td>${user.subjects}</td>
       <td>${new Date(user.createdAt).toLocaleString()}</td>
     `;
     tableBody.appendChild(row);
   });
 }
+
+
   function deleteSelectedUsers() {
   const checkboxes = document.querySelectorAll('.user-checkbox:checked');
   if (checkboxes.length === 0) {
@@ -152,38 +178,5 @@
 
     renderUsers();
   </script>
-<body>
-  <h1>Registered Users</h1>
-  <table id="userTable">
-    <thead>
-      <tr>
-        <th><input type="checkbox" id="selectAll" /></th>
-        <th>No.</th>
-        <th>Username</th>
-        <th>Email</th>
-        <th>Role</th>
-        <th>Full Name</th>
-        <th>Status</th>
-        <th>Created At</th>
-      </tr>
-    </thead>
-    <tbody>
-    </tbody>
-  </table>
-
-  <button class="danger-button" onclick="deleteSelectedUsers()">Delete Selected Users</button>
-  <button class="danger-button" onclick="resetDatabase()">Delete All Users</button>
 </body>
 </html>
-
-<!-- localStorage.removeItem('automark_users');
-localStorage.removeItem('automark_sessions');
-localStorage.removeItem('automark_token');
-localStorage.removeItem('automark_user');
-localStorage.removeItem('automark_login_time');
-localStorage.removeItem('automark_last_username'); -->
-
-<!--
-Code for deleting records from database
-follow steps: (right-click → Inspect → Console → press enter to run)
--->

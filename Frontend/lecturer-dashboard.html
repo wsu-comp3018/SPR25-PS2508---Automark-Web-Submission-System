@@ -444,6 +444,16 @@ let allUsers = loadJSON(USERS_KEY);
 const students = allUsers.filter(u => u.role === 'student');
 filteredStudents = [...students];
 
+/*
+  New additions and changes summary (kept minimal & self-contained):
+  - Folders now include ownerId and ownerUsername to mark who created them.
+  - createFolder / createSubfolder set owner info (current lecturer) automatically.
+  - When the lecturer has subjects listed (currentUser.subjects), the dashboard automatically creates a folder for each subject (if missing).
+  - A visibility filter is applied so the lecturer only sees: subject folders assigned to them (by name) OR folders they created.
+  - Bulk lists, stats and "View All Submissions" respect the lecturer's visible folders.
+  - Subfolders inherit ownerId from parent.
+*/
+
 // file handling - multiple files
 function saveFiles(files, callback) {
   let savedFiles = [];
@@ -463,7 +473,9 @@ function saveFiles(files, callback) {
         type: file.type,
         size: file.size,
         lastModified: file.lastModified,
-        content: e.target.result.split(',')[1]
+        content: e.target.result.split(',')[1],
+        uploaderId: currentUser ? currentUser.id : null,
+        uploadedAt: new Date().toISOString()
       };
       
       const existingFiles = loadJSON(FILES_KEY) || [];
@@ -504,13 +516,26 @@ function saveFolders(f){ saveJSON(STORAGE_FOLDERS,f) }
 function getSubs(){ return loadJSON(STORAGE_SUBS) }
 function saveSubs(s){ saveJSON(STORAGE_SUBS,s) }
 
-function createFolder(name, assignedTo=[], fileIds=[], description='', dueDate='', maxPoints='', status='draft'){
-  if(!name.trim()) return false;
+/*
+  createFolder now attaches ownership information automatically (ownerId, ownerUsername).
+  If ownerId is passed explicitly it will be used; otherwise the currentUser.id is used.
+*/
+function createFolder(name, assignedTo=[], fileIds=[], description='', dueDate='', maxPoints='', status='draft', ownerId = null){
+  if(!name || !name.toString().trim()) return false;
   const folders = getFolders();
+  const resolvedOwnerId = ownerId ?? (currentUser ? currentUser.id : null);
+  const resolvedOwnerUsername = (() => {
+    if (resolvedOwnerId) {
+      const u = allUsers.find(x => x.id === resolvedOwnerId);
+      return u ? u.username : (currentUser ? currentUser.username : null);
+    }
+    return currentUser ? currentUser.username : null;
+  })();
+
   const newFolder = { 
     id: uid('folder'), 
-    name: name.trim(), 
-    description: description.trim(),
+    name: name.toString().trim(), 
+    description: description.toString().trim(),
     assignedTo, 
     fileIds,
     dueDate,
@@ -518,7 +543,9 @@ function createFolder(name, assignedTo=[], fileIds=[], description='', dueDate='
     status,
     subfolders: [], 
     createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
+    ownerId: resolvedOwnerId,
+    ownerUsername: resolvedOwnerUsername
   };
   folders.push(newFolder);
   saveFolders(folders); 
@@ -535,8 +562,8 @@ function createSubfolder(parentId, name, assignedTo=[], fileIds=[], description=
   
   const newSubfolder = { 
     id: uid('sub'), 
-    name: name.trim(), 
-    description: description.trim(),
+    name: name.toString().trim(), 
+    description: description.toString().trim(),
     assignedTo, 
     fileIds,
     dueDate,
@@ -544,7 +571,9 @@ function createSubfolder(parentId, name, assignedTo=[], fileIds=[], description=
     status,
     subfolders: [], 
     createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
+    ownerId: parent.ownerId ?? (currentUser ? currentUser.id : null),
+    ownerUsername: parent.ownerUsername ?? (currentUser ? currentUser.username : null)
   };
   
   parent.subfolders.push(newSubfolder);
@@ -609,6 +638,58 @@ function updateFolder(folderId, updates) {
   saveFolders(folders);
   return true;
 }
+
+// ---------- Visibility helpers so the lecturer only sees their subjects or folders they created ----------
+function lecturerSubjectsNormalized() {
+  if (!currentUser) return [];
+  if (!Array.isArray(currentUser.subjects)) return [];
+  return currentUser.subjects.map(s => (s || '').toString().trim()).filter(Boolean);
+}
+
+function folderIsVisibleToLecturer(folder) {
+  const subjects = lecturerSubjectsNormalized();
+  if (!folder) return false;
+  // Visible if the folder name matches one of the lecturer's subjects
+  if (subjects.includes(folder.name)) return true;
+  // Visible if folder was created by this lecturer
+  if (folder.ownerId && currentUser && folder.ownerId === currentUser.id) return true;
+  return false;
+}
+
+/*
+  Build a list of top-level folders to display to the lecturer:
+  - If a folder is visible (owner or subject match): include it and recursively include its visible subfolders.
+  - If a folder is not visible but contains subfolders that are visible, promote those visible children to top-level.
+*/
+function gatherVisibleFolders(nodes) {
+  const result = [];
+  nodes.forEach(node => {
+    // gather visible children first
+    const visibleChildren = node.subfolders && node.subfolders.length ? gatherVisibleFolders(node.subfolders) : [];
+    if (folderIsVisibleToLecturer(node)) {
+      // include the node with only the visible children
+      const copy = Object.assign({}, node, { subfolders: visibleChildren });
+      result.push(copy);
+    } else {
+      // if node is not visible, promote any visible children to top-level
+      visibleChildren.forEach(child => result.push(child));
+    }
+  });
+  return result;
+}
+
+function collectAllIds(nodes, set) {
+  nodes.forEach(n => {
+    set.add(n.id);
+    if (n.subfolders && n.subfolders.length) collectAllIds(n.subfolders, set);
+  });
+}
+
+function getVisibleFolders() {
+  const all = getFolders();
+  return gatherVisibleFolders(all);
+}
+// ---------- end visibility helpers ----------
 
 // Student search 
 function filterStudents() {
@@ -693,13 +774,13 @@ function renderFolderList(){
   const container = $('folderList');
   container.innerHTML = '';
   
-  const folders = getFolders();
-  if(folders.length === 0){
-    container.innerHTML = '<div class="muted">No assignments created yet. Use the form on the left to create your first assignment.</div>';
+  const visibleFolders = getVisibleFolders();
+  if(visibleFolders.length === 0){
+    container.innerHTML = '<div class="muted">No assignments created yet or no assignments are visible for your account. If you have subjects assigned they will be created automatically when you load the page.</div>';
     return;
   }
   
-  folders.forEach(folder => {
+  visibleFolders.forEach(folder => {
     renderFolderItem(container, folder);
   });
 }
@@ -773,6 +854,16 @@ function renderSubmissions(folderId, subfolderId=null){
     container.innerHTML = '<div class="muted">Folder not found</div>';
     return;
   }
+
+  // Check access: ensure this folder is visible to lecturer
+  const visibleIds = new Set();
+  collectAllIds(getVisibleFolders(), visibleIds);
+  if (!visibleIds.has(folder.id)) {
+    container.innerHTML = '<div class="muted">You do not have permission to view submissions for this folder.</div>';
+    $('subViewer').style.display = 'block';
+    $('subViewerFolderName').textContent = folder.name || 'Unknown';
+    return;
+  }
   
   $('subViewerFolderName').textContent = folder.name;
   $('subViewer').style.display = 'block';
@@ -838,7 +929,7 @@ function renderBulkAssignmentLists() {
   folderContainer.innerHTML = '';
   studentContainer.innerHTML = '';
   
-  const folders = getFolders();
+  const folders = getVisibleFolders(); // show only visible folders for this lecturer
   
   function addFolderToList(folder, level = 0) {
     const div = document.createElement('div');
@@ -875,7 +966,7 @@ function renderBulkAssignmentLists() {
 }
 
 function updateStatistics() {
-  const folders = getFolders();
+  const folders = getVisibleFolders();
   const submissions = getSubs();
   
   function countFolders(folderList) {
@@ -890,8 +981,16 @@ function updateStatistics() {
   
   const totalFolders = countFolders(folders);
   const totalStudents = students.length;
-  const totalSubmissions = submissions.length;
-  const pendingReview = submissions.filter(sub => !sub.graded).length;
+  const totalSubmissions = submissions.filter(s => {
+    const visIds = new Set();
+    collectAllIds(folders, visIds);
+    return visIds.has(s.folderId);
+  }).length;
+  const pendingReview = submissions.filter(sub => {
+    const visIds = new Set();
+    collectAllIds(folders, visIds);
+    return visIds.has(sub.folderId) && !sub.graded;
+  }).length;
   
   $('totalFolders').textContent = totalFolders;
   $('totalStudents').textContent = totalStudents;
@@ -911,6 +1010,8 @@ function cloneFolder(originalId) {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     assignedTo: [], 
+    ownerId: currentUser ? currentUser.id : original.ownerId,
+    ownerUsername: currentUser ? currentUser.username : original.ownerUsername,
     subfolders: cloneSubfolders(original.subfolders || [])
   };
   
@@ -929,6 +1030,8 @@ function cloneSubfolders(subfolders) {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     assignedTo: [],
+    ownerId: currentUser ? currentUser.id : sub.ownerId,
+    ownerUsername: currentUser ? currentUser.username : sub.ownerUsername,
     subfolders: cloneSubfolders(sub.subfolders || [])
   }));
 }
@@ -1043,6 +1146,38 @@ function formatDownloadFileName(fileId, submission, student) {
 
 // Event listeners
 document.addEventListener('DOMContentLoaded', () => {
+  // Auto-create subject folders for lecturer if missing
+  (function ensureSubjectFolders() {
+    if (!currentUser) return;
+    const subjects = lecturerSubjectsNormalized();
+    if (!subjects.length) return;
+    const folders = getFolders();
+    let created = false;
+    subjects.forEach(subj => {
+      // Only create if not already present by name for this lecturer
+      const exists = folders.find(f => f.name === subj && f.ownerId === currentUser.id);
+      if (!exists) {
+        folders.push({
+          id: uid('folder'),
+          name: subj,
+          description: `${subj} - Auto-generated subject folder`,
+          assignedTo: [],
+          fileIds: [],
+          dueDate: '',
+          maxPoints: null,
+          status: 'active',
+          subfolders: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          ownerId: currentUser.id,
+          ownerUsername: currentUser.username
+        });
+        created = true;
+      }
+    });
+    if (created) saveFolders(folders);
+  })();
+
   // File input handlers with multiple file support
   $('folderFile').addEventListener('change', (e) => {
     const files = e.target.files;
@@ -1237,10 +1372,15 @@ document.addEventListener('DOMContentLoaded', () => {
   $('downloadAllSubs').addEventListener('click', () => {
     const folderName = $('subViewerFolderName').textContent;
     const subs = getSubs();
-    const folderSubs = subs.filter(sub => {
-      const folder = findFolderById(getFolders(), sub.folderId);
-      return folder && folder.name === folderName;
-    });
+    // restrict to visible folders
+    const visibleFolders = getVisibleFolders();
+    const visibleIds = new Set();
+    collectAllIds(visibleFolders, visibleIds);
+    
+    const folderSubs = subs.filter(sub => visibleIds.has(sub.folderId) && (() => {
+      const f = findFolderById(getFolders(), sub.folderId);
+      return f && (f.name === folderName || folderName === 'All Submissions');
+    })());
     
     if(folderSubs.length === 0) {
       showNotification('No submissions to download', 'warning');
@@ -1348,18 +1488,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const container = $('submissionsContainer');
     container.innerHTML = '';
     
+    const visibleFolders = getVisibleFolders();
+    const visibleIds = new Set();
+    collectAllIds(visibleFolders, visibleIds);
+
     $('subViewerFolderName').textContent = 'All Submissions';
     $('subViewer').style.display = 'block';
     
-    if(subs.length === 0){
+    const filteredSubs = subs.filter(s => visibleIds.has(s.folderId));
+    
+    if(filteredSubs.length === 0){
       container.innerHTML = '<div class="muted">No submissions found across all assignments.</div>';
       return;
     }
     
     // Sort by submission date
-    subs.sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
+    filteredSubs.sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
     
-    subs.forEach(sub => {
+    filteredSubs.forEach(sub => {
       const student = allUsers.find(u => u.id === sub.studentId);
       const folder = findFolderById(getFolders(), sub.folderId);
       const subfolder = sub.subfolderId ? findFolderById(getFolders(), sub.subfolderId) : null;
@@ -1434,9 +1580,13 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Exporting data
   $('exportData').addEventListener('click', () => {
+    const visibleFolders = getVisibleFolders();
+    const visibleFolderIds = new Set();
+    collectAllIds(visibleFolders, visibleFolderIds);
+
     const data = {
-      folders: getFolders(),
-      submissions: getSubs(),
+      folders: visibleFolders,
+      submissions: getSubs().filter(s => visibleFolderIds.has(s.folderId)),
       users: allUsers.filter(u => u.role === 'student'), 
       files: loadJSON(FILES_KEY) || [],
       exportedAt: new Date().toISOString(),
