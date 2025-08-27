@@ -14,4 +14,33 @@ For Students
 - Resubmission: Submit revised work, anytime before due date
 - Past Submissions - A backup of all submissions will be stored in the DB
 
-this is to test
+<h1>Login Details for Lecturer's</h2>
+1. Lecturer for COMP 3018
+
+   Username: lect_comp3018
+
+   Email: lect_comp3018@automark.edu
+
+   Password: Pass3018!
+
+   Subjects: COMP 3018
+
+2. Lecturer for INFO 3019
+
+   Username: lect_info3019
+
+   Email: lect_info3019@automark.edu
+
+   Password: Pass3019!
+
+   Subjects: INFO 3019
+
+3. Lecturer for INFS 3006
+
+   Username: lect_infs3006
+
+   Email: lect_infs3006@automark.edu
+
+   Password: Pass3006!
+
+   Subjects: INFS 3006
