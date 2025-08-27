@@ -456,6 +456,7 @@
                     <select class="with-icon" id="signup-role" required>
                         <option value="">Select Role</option>
                         <option value="student">Student</option>
+                        <option value="lecturer">Lecturer</option>
                     </select>
                 </div>
                 
@@ -563,75 +564,11 @@
             }
 
             initDefaultUsers() {
-                // Ensure every existing user has the new "subjects" column
-                this.users.forEach(u => {
-                    if (!Array.isArray(u.subjects)) {
-                        u.subjects = [];
-                    }
-                });
-
-                // Hard-coded lecturer accounts with assigned units (subjects)
-                const defaultLecturers = [
-                    {
-                        username: 'lect_comp3018',
-                        email: 'lect_comp3018@automark.edu',
-                        firstName: 'COMP',
-                        lastName: 'Lecturer',
-                        role: 'lecturer',
-                        subjects: ['COMP 3018'],
-                        passwordPlain: 'Pass3018!'
-                    },
-                    {
-                        username: 'lect_info3019',
-                        email: 'lect_info3019@automark.edu',
-                        firstName: 'INFO',
-                        lastName: 'Lecturer',
-                        role: 'lecturer',
-                        subjects: ['INFO 3019'],
-                        passwordPlain: 'Pass3019!'
-                    },
-                    {
-                        username: 'lect_infs3006',
-                        email: 'lect_infs3006@automark.edu',
-                        firstName: 'INFS',
-                        lastName: 'Lecturer',
-                        role: 'lecturer',
-                        subjects: ['INFS 3006'],
-                        passwordPlain: 'Pass3006!'
-                    }
-                ];
-
-                // Insert hard-coded lecturers if missing
-                defaultLecturers.forEach(lec => {
-                    const existing = this.users.find(u => u.username === lec.username);
-                    if (!existing) {
-                        const newUser = {
-                            id: this.users.length + 1,
-                            username: lec.username,
-                            email: lec.email,
-                            password: this.hashPassword(lec.passwordPlain),
-                            role: lec.role,
-                            firstName: lec.firstName,
-                            lastName: lec.lastName,
-                            createdAt: new Date().toISOString(),
-                            isActive: true,
-                            lastLogin: null,
-                            subjects: lec.subjects
-                        };
-                        this.users.push(newUser);
-                    } else {
-                        // Ensure subjects exist for the hard-coded lecturers
-                        if (!Array.isArray(existing.subjects)) {
-                            existing.subjects = lec.subjects;
-                        }
-                        if (existing.role !== 'lecturer') {
-                            existing.role = 'lecturer';
-                        }
-                    }
-                });
-
-                this.saveUsers();
-            }
+                
+            
+                    this.saveUsers();
+                }
+            
 
             hashPassword(password) {
                 // Simple hash, for prototype purpose
@@ -682,7 +619,7 @@
                     throw new Error('Password must be at least 6 characters long');
                 }
 
-                // Creates new user (subjects column included)
+                // Creates new user
                 const newUser = {
                     id: this.users.length + 1,
                     username: userData.username.trim(),
@@ -693,8 +630,7 @@
                     lastName: userData.lastName.trim(),
                     createdAt: new Date().toISOString(),
                     isActive: true,
-                    lastLogin: null,
-                    subjects: Array.isArray(userData.subjects) ? userData.subjects : [] // default empty subjects
+                    lastLogin: null
                 };
 
                 this.users.push(newUser);
@@ -709,8 +645,7 @@
                         email: newUser.email,
                         role: newUser.role,
                         firstName: newUser.firstName,
-                        lastName: newUser.lastName,
-                        subjects: newUser.subjects
+                        lastName: newUser.lastName
                     }
                 };
             }
@@ -768,8 +703,7 @@
                         role: user.role,
                         firstName: user.firstName,
                         lastName: user.lastName,
-                        lastLogin: user.lastLogin,
-                        subjects: user.subjects || []
+                        lastLogin: user.lastLogin
                     }
                 };
             }
@@ -804,8 +738,7 @@
                         email: user.email,
                         role: user.role,
                         firstName: user.firstName,
-                        lastName: user.lastName,
-                        subjects: user.subjects || []
+                        lastName: user.lastName
                     }
                 };
             }
@@ -920,7 +853,6 @@
                 role: document.getElementById('signup-role').value,
                 firstName: document.getElementById('first-name').value.trim(),
                 lastName: document.getElementById('last-name').value.trim()
-                // subjects column is stored as [] by default for new signups
             };
             
             // Client-side validation
@@ -1023,6 +955,49 @@
                 showError('signin-error', error.message);
             }
         });
+
+
+   /*     // Sign in form handler (SSH API)
+document.getElementById('signinForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    hideError('signin-error');
+    hideSuccess('signin-success');
+
+    const credentials = {
+        username: document.getElementById('signin-username').value.trim(),
+        password: document.getElementById('signin-password').value
+    };
+
+    if (!credentials.username || !credentials.password) {
+        showError('signin-error', 'Please enter both username and password');
+        return;
+    }
+
+    showLoading('signin-loading');
+
+    try {
+        const response = await fetch("/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(credentials)
+        });
+
+        const result = await response.json();
+        hideLoading('signin-loading');
+
+        if (result.success) {
+            showSuccess('signin-success', result.message);
+            showDashboardPreview({ role: "student", firstName: credentials.username, lastName: "" });
+        } else {
+            showError('signin-error', result.message);
+        }
+    } catch (error) {
+        hideLoading('signin-loading');
+        showError('signin-error', "Connection error");
+    }
+});
+*/
+
         // Dashboard preview and redirection
         function showDashboardPreview(user) {
             const modal = document.getElementById('dashboard-preview');
@@ -1037,10 +1012,10 @@
         // Redirect to appropriate dashboard based on user role 
        function redirectToDashboard(user) {
     const dashboardUrls = {
-        'student': 'studentdash.html', //For successful navigation the name of the file here will need to be changed if Laura's student dashboard file is named something else
+        'student': 'student-dashboard.html', //For successful navigation the name of the file here will need to be changed if Laura's student dashboard file is named something else
         'lecturer': 'lecturer-dashboard.html'
     };
-    const dashboardUrl = dashboardUrls[user.role] || 'studentdash.html';
+    const dashboardUrl = dashboardUrls[user.role] || 'student-dashboard.html';
     window.location.href = dashboardUrl;
 }
                 document.getElementById('dashboard-preview').style.display = 'none';
@@ -1318,34 +1293,3 @@
     </script>
 </body>
 </html>
-<!--
-1. Lecturer for COMP 3018
-
-   Username: lect_comp3018
-
-   Email: lect_comp3018@automark.edu
-
-   Password: Pass3018!
-
-   Subjects: COMP 3018
-
-2. Lecturer for INFO 3019
-
-   Username: lect_info3019
-
-   Email: lect_info3019@automark.edu
-
-   Password: Pass3019!
-
-   Subjects: INFO 3019
-
-3. Lecturer for INFS 3006
-
-   Username: lect_infs3006
-
-   Email: lect_infs3006@automark.edu
-
-   Password: Pass3006!
-
-   Subjects: INFS 3006
--->
