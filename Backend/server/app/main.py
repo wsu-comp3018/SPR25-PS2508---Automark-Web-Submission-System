@@ -4,7 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 import hashlib, sqlite3, uuid, datetime
 
-DB_PATH = "automark.db"
+import os
+DB_PATH = os.getenv("DB_PATH", "automark.db")
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
