@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # FastAPI Backend Server
+  automark-api:
+    build:
+      context: ./Backend/server
+      dockerfile: Dockerfile
+    container_name: automark-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_PATH=/app/data/automark.db
+      - UPLOAD_DIR=/app/uploads
+      - PYTHONPATH=/app
+    volumes:
+      # Persist database and uploads
+      - automark-data:/app/data
+      - automark-uploads:/app/uploads
+      # Mount source code for development (hot reload)
+      - ./Backend/server:/app
+    networks:
+      - automark-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # SSH Server for Assignment Submissions
+  automark-ssh:
+    build:
+      context: ./Backend/docker
+      dockerfile: Dockerfile
+    container_name: automark-ssh
+    ports:
+      - "2222:22"
+    volumes:
+      # Persist student submissions
+      - automark-submissions:/home
+      # Allow shared access to submissions from API server
+      - automark-submissions:/shared/submissions:ro
+    networks:
+      - automark-network
+    restart: unless-stopped
+    environment:
+      - TZ=Australia/Sydney
+    healthcheck:
+      test: ["CMD", "systemctl", "is-active", "ssh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Web Server for Frontend (optional - for production)
+  automark-web:
+    image: nginx:alpine
+    container_name: automark-web
+    ports:
+      - "3000:80"
+    volumes:
+      - ./Frontend:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - automark-network
+    restart: unless-stopped
+    depends_on:
+      - automark-api
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  # Persistent storage for database and files
+  automark-data:
+    driver: local
+  automark-uploads:
+    driver: local
+  automark-submissions:
+    driver: local
+
+networks:
+  automark-network:
+    driver: bridge
