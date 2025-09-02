@@ -564,11 +564,74 @@
             }
 
             initDefaultUsers() {
-                
-            
+                // Ensure all existing users have a 'subjects' column
+                let changed = false;
+                this.users = this.users.map(u => {
+                    if (u.subjects === undefined) { u.subjects = []; changed = true; }
+                    return u;
+                });
+
+                // Hard-coded lecturer accounts with assigned units & passwords
+                const hardcodedLecturers = [
+                    {
+                        username: 'lect1',
+                        email: 'lect1@automark.edu',
+                        password: 'Pass@3018',
+                        role: 'lecturer',
+                        firstName: 'Alice',
+                        lastName: 'Ng',
+                        subjects: ['COMP 3018']
+                    },
+                    {
+                        username: 'lect2',
+                        email: 'lect2@automark.edu',
+                        password: 'Pass@3019',
+                        role: 'lecturer',
+                        firstName: 'Ben',
+                        lastName: 'Singh',
+                        subjects: ['INFO 3019']
+                    },
+                    {
+                        username: 'lect3',
+                        email: 'lect3@automark.edu',
+                        password: 'Pass@3006',
+                        role: 'lecturer',
+                        firstName: 'Chloe',
+                        lastName: 'Miller',
+                        subjects: ['INFS 3006']
+                    }
+                ];
+
+                // Insert hard-coded lecturers if missing; keep existing if already present
+                hardcodedLecturers.forEach(h => {
+                    const exists = this.users.find(u => u.username === h.username || u.email?.toLowerCase() === h.email.toLowerCase());
+                    if (!exists) {
+                        const newId = (this.users.reduce((m,u)=>Math.max(m,u.id||0),0) + 1) || 1;
+                        this.users.push({
+                            id: newId,
+                            username: h.username,
+                            email: h.email.toLowerCase(),
+                            password: this.hashPassword(h.password),
+                            role: 'lecturer',
+                            firstName: h.firstName,
+                            lastName: h.lastName,
+                            createdAt: new Date().toISOString(),
+                            isActive: true,
+                            lastLogin: null,
+                            subjects: h.subjects   // new column
+                        });
+                        changed = true;
+                    } else {
+                        // Ensure the existing hard-coded lecturer retains the required subjects
+                        if (!Array.isArray(exists.subjects)) { exists.subjects = []; changed = true; }
+                        h.subjects.forEach(s => { if (!exists.subjects.includes(s)) { exists.subjects.push(s); changed = true; }});
+                    }
+                });
+
+                if (changed) {
                     this.saveUsers();
                 }
-            
+            }
 
             hashPassword(password) {
                 // Simple hash, for prototype purpose
@@ -619,7 +682,7 @@
                     throw new Error('Password must be at least 6 characters long');
                 }
 
-                // Creates new user
+                // Creates new user (subjects column added)
                 const newUser = {
                     id: this.users.length + 1,
                     username: userData.username.trim(),
@@ -630,7 +693,8 @@
                     lastName: userData.lastName.trim(),
                     createdAt: new Date().toISOString(),
                     isActive: true,
-                    lastLogin: null
+                    lastLogin: null,
+                    subjects: [] // new column; empty by default for self-registrations
                 };
 
                 this.users.push(newUser);
@@ -645,7 +709,8 @@
                         email: newUser.email,
                         role: newUser.role,
                         firstName: newUser.firstName,
-                        lastName: newUser.lastName
+                        lastName: newUser.lastName,
+                        subjects: newUser.subjects
                     }
                 };
             }
@@ -657,7 +722,7 @@
                     throw new Error('Username and password are required');
                 }
 
-                // Finds the user by username or email
+                // Finds the user by username or email (includes hard-coded lecturers)
                 const user = this.users.find(u => 
                     u.username === username || u.email === username.toLowerCase()
                 );
@@ -703,7 +768,8 @@
                         role: user.role,
                         firstName: user.firstName,
                         lastName: user.lastName,
-                        lastLogin: user.lastLogin
+                        lastLogin: user.lastLogin,
+                        subjects: Array.isArray(user.subjects) ? user.subjects : [] // include subjects in session
                     }
                 };
             }
@@ -730,6 +796,7 @@
                     return { valid: false, message: 'User not found or inactive' };
                 }
 
+                // ensure subjects is present in validated response
                 return {
                     valid: true,
                     user: {
@@ -738,7 +805,8 @@
                         email: user.email,
                         role: user.role,
                         firstName: user.firstName,
-                        lastName: user.lastName
+                        lastName: user.lastName,
+                        subjects: Array.isArray(user.subjects) ? user.subjects : []
                     }
                 };
             }
