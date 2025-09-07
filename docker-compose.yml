@@ -19,6 +19,8 @@ services:
       - automark-uploads:/app/uploads
       # Mount source code for development (hot reload)
       - ./Backend/server:/app
+      # Mount Docker socket for SSH user management
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - automark-network
     restart: unless-stopped

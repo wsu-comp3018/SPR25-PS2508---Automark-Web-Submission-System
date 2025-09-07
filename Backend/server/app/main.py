@@ -5,7 +5,8 @@ from pydantic import BaseModel, EmailStr
 import hashlib, sqlite3, uuid, datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pathlib import Path
+from pathlib import Pathimport logging
+
 import os
 from typing import List, Optional
 import json
@@ -19,7 +20,15 @@ STATIC_DIR = BASE_DIR / "static"
 # print("Files inside STATIC_DIR:", list(STATIC_DIR.rglob("*")))
 
 
+import sys
+sys.path.append('/app')
+from ssh_user_manager import create_ssh_user_for_registration
+
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "automark.db"))
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def init_db():
     try:
@@ -279,6 +288,20 @@ def register(body: RegisterIn):
     c.execute("SELECT id, username, email, role, first_name, last_name FROM users WHERE id = ?", (user_id,))
     row = c.fetchone()
     conn.close()
+    
+    # Create SSH user automatically
+    try:
+        ssh_result = create_ssh_user_for_registration(body.username.strip(), body.password)
+        if ssh_result["success"]:
+            logger.info(f"SSH user created for {body.username}: {ssh_result['message']}")
+        else:
+            logger.warning(f"SSH user creation failed for {body.username}: {ssh_result.get('error', 'Unknown error')}")
+            # Note: We don't fail the registration if SSH creation fails
+            # The user can still use the web interface
+    except Exception as e:
+        logger.error(f"Error creating SSH user for {body.username}: {e}")
+        # Continue with registration even if SSH creation fails
+    
     return RegisterOut(
         id=row[0], username=row[1], email=row[2], role=row[3],
         first_name=row[4], last_name=row[5]
@@ -679,3 +702,42 @@ async def grade_submission(submission_id: int, grade: GradeSubmission, current_u
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         conn.close()
+
+# SSH User Management Endpoints (Admin)
+@app.get("/api/v1/admin/ssh-users")
+def list_ssh_users():
+    """List all SSH users in the container"""
+    try:
+        from ssh_user_manager import SSHUserManager
+        manager = SSHUserManager()
+        result = manager.list_users()
+        return result
+    except Exception as e:
+        logger.error(f"Error listing SSH users: {e}")
+        raise HTTPException(500, f"Failed to list SSH users: {str(e)}")
+
+@app.post("/api/v1/admin/ssh-users/{username}")
+def create_ssh_user_admin(username: str, password: str):
+    """Manually create SSH user (admin endpoint)"""
+    try:
+        result = create_ssh_user_for_registration(username, password)
+        if not result["success"]:
+            raise HTTPException(400, result.get("error", "Failed to create SSH user"))
+        return result
+    except Exception as e:
+        logger.error(f"Error creating SSH user {username}: {e}")
+        raise HTTPException(500, f"Failed to create SSH user: {str(e)}")
+
+@app.delete("/api/v1/admin/ssh-users/{username}")
+def delete_ssh_user_admin(username: str):
+    """Delete SSH user (admin endpoint)"""
+    try:
+        from ssh_user_manager import SSHUserManager
+        manager = SSHUserManager()
+        result = manager.delete_user(username)
+        if not result["success"]:
+            raise HTTPException(400, result.get("error", "Failed to delete SSH user"))
+        return result
+    except Exception as e:
+        logger.error(f"Error deleting SSH user {username}: {e}")
+        raise HTTPException(500, f"Failed to delete SSH user: {str(e)}")
