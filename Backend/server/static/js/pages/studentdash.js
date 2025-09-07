@@ -1,133 +1,4 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>AutoMark — Student Dashboard</title>
-  <style>
-    :root{
-      --primary:#667eea;
-      --accent:#764ba2;
-      --bg:#f4f6f8;
-      --card:#ffffff;
-      --muted:#666;
-      --danger:#e74c3c;
-      --success:#27ae60;
-      --warning:#f39c12;
-      --radius:12px;
-    }
-    *{box-sizing:border-box;font-family:'Segoe UI',Tahoma, Geneva, Verdana, sans-serif}
-    body{margin:0;background:var(--bg);padding:20px;color:#222}
-    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
-    .brand{display:flex;gap:12px;align-items:center}
-    .logo{font-size:28px;color:var(--primary)}
-    h1{margin:0;font-size:20px}
-    .controls{display:flex;gap:10px;align-items:center}
-    button{background:linear-gradient(135deg,var(--primary),var(--accent));border:none;color:#fff;padding:10px 14px;border-radius:10px;cursor:pointer;font-size:14px}
-    button:hover{opacity:0.9;transform:translateY(-1px)}
-    button:disabled{opacity:0.5;cursor:not-allowed;transform:none}
-    button.ghost{background:transparent;border:1px solid rgba(0,0,0,0.08);color:#222}
-    button.success{background:linear-gradient(135deg,var(--success),#229954)}
-    button.warning{background:linear-gradient(135deg,var(--warning),#e67e22)}
-    button.danger{background:linear-gradient(135deg,var(--danger),#c0392b)}
-    .layout{display:grid;grid-template-columns:360px 1fr;gap:18px}
-    .panel{background:var(--card);border-radius:var(--radius);padding:16px;box-shadow:0 6px 18px rgba(0,0,0,0.04)}
-    .small{font-size:13px;color:var(--muted)}
-    .list{max-height:72vh;overflow:auto;padding-right:6px}
-    .search-box{position:relative;margin-bottom:12px}
-    .search-box input{width:100%;padding:10px 12px 10px 36px;border:1px solid #e9ecef;border-radius:10px}
-    .search-box::before{content:'🔍';position:absolute;left:12px;top:50%;transform:translateY(-50%);z-index:1}
-    .assignment{padding:10px;border-radius:8px;margin-bottom:8px;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border:1px solid #f0f0f0;transition:all 0.2s}
-    .assignment:hover{border-color:#ddd;background:#fafafa}
-    .assignment .left{display:flex;gap:10px;align-items:flex-start;flex:1}
-    .assignment .name{font-weight:600}
-    .assignment .meta{font-size:12px;color:var(--muted)}
-    .assignment .status{font-size:11px;padding:2px 6px;border-radius:4px;text-transform:uppercase}
-    .status.active{background:#e8f5e8;color:var(--success)}
-    .status.draft{background:#fff3cd;color:var(--warning)}
-    .subtree{margin-left:24px;border-left:2px solid #eee;padding-left:12px}
-    .actions{display:flex;gap:6px;flex-shrink:0}
-    .file-input{display:none}
-    .file-label{display:inline-block;padding:8px 12px;background:#f1f5ff;border-radius:8px;cursor:pointer;font-size:13px;border:1px dashed var(--primary)}
-    .file-label:hover{background:#e6edff}
-    .notification{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:8px;color:white;font-weight:500;z-index:1001;transform:translateX(400px);transition:transform 0.3s}
-    .notification.show{transform:translateX(0)}
-    .notification.success{background:var(--success)}
-    .notification.error{background:var(--danger)}
-    .notification.warning{background:var(--warning)}
-    .inline-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}
-    .inline-form .hint{font-size:12px;color:var(--muted)}
-    .badge{font-size:11px;padding:2px 6px;border-radius:4px;background:#eef2ff;color:#3949ab}
-    .grade{font-weight:700;color:#1b5e20}
-    .late{background:#ffebee;color:#c62828}
-    .file-list{margin-top:8px;padding:8px;background:#f8f9fa;border-radius:6px;border:1px solid #e9ecef}
-    .file-item{display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px solid #eee}
-    .file-item:last-child{border-bottom:none}
-    .file-name{font-size:12px;color:#555;flex:1}
-    .file-size{font-size:11px;color:var(--muted);margin-left:8px}
-    .file-remove{background:none;border:none;color:var(--danger);cursor:pointer;padding:2px 6px;border-radius:3px;font-size:11px}
-    .file-remove:hover{background:#ffebee}
-    .submitted-files{margin-top:6px;padding:6px 10px;background:#e8f5e8;border-radius:6px;border:1px solid #c8e6c8}
-    .submitted-file{display:flex;align-items:center;gap:8px;padding:2px 0}
-    .submitted-file .name{font-size:12px;color:#2e7d32;font-weight:500}
-    .submitted-file .download{font-size:11px;color:var(--primary);cursor:pointer;text-decoration:underline}
-    .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:16px}
-    .stat{text-align:center;padding:12px;background:#f8f9fa;border-radius:8px}
-    .stat .number{font-size:20px;font-weight:bold;color:var(--primary)}
-    .stat .label{font-size:12px;color:var(--muted);text-transform:uppercase}
-    @media (max-width:1024px){.layout{grid-template-columns:1fr}}
-    @media (max-width:768px){body{padding:10px}}
-  </style>
-</head>
-<body>
-  <header>
-    <div class="brand">
-      <div class="logo">🎓 AutoMark</div>
-      <div>
-        <h1>Student Dashboard</h1>
-        <div class="small">View assignments and submit your work</div>
-      </div>
-    </div>
-    <div class="controls">
-      <div class="small" id="greeting">Welcome</div>
-      <button id="runDiagBtn" class="ghost" title="Run diagnostics">Diagnostics</button>
-      <button id="logoutBtn" class="ghost">Sign out</button>
-    </div>
-  </header>
 
-  <div class="stats">
-    <div class="stat"><div class="number" id="statActive">0</div><div class="label">Active Tasks</div></div>
-    <div class="stat"><div class="number" id="statSubmitted">0</div><div class="label">My Submissions</div></div>
-    <div class="stat"><div class="number" id="statDueSoon">0</div><div class="label">Due in 7 Days</div></div>
-    <div class="stat"><div class="number" id="statGraded">0</div><div class="label">Graded</div></div>
-  </div>
-
-  <div class="layout">
-    <aside class="panel">
-      <h3 style="margin-top:0">Assigned to Me</h3>
-      <div class="small">Only assignments that your lecturer has made <strong>Active</strong> and assigned to you are shown.</div>
-
-      <div class="search-box" style="margin-top:12px">
-        <input id="searchBox" placeholder="Search by name or description..." />
-      </div>
-
-      <div id="sidebarList" class="list"></div>
-    </aside>
-
-    <main class="panel">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <h3 style="margin:0">Assignments</h3>
-        <div style="display:flex;gap:8px;align-items:center">
-          <span class="small">Tip: Click folders to expand</span>
-        </div>
-      </div>
-      <div id="mainList" class="list"></div>
-    </main>
-  </div>
-
-  <div id="notification" class="notification"></div>
-</body>
-<script>
 /********************
  * Storage Contracts *
  ********************/
@@ -572,7 +443,7 @@ document.addEventListener('DOMContentLoaded', () => {
   $('logoutBtn').addEventListener('click', () => {
     localStorage.removeItem('automark_token');
     localStorage.removeItem('automark_user');
-    window.location.href = 'Login and Registration.html';
+    window.location.href = 'login&register.html';
   });
 
   // diagnostics
@@ -602,5 +473,3 @@ function runDiagnostics(){
   if(errs.length){ console.error('[Diagnostics errors]', errs); showNote('Diagnostics: '+errs.join(' | '), 'error'); }
   else{ console.info('[Diagnostics warnings]', warn); showNote('Diagnostics passed. '+(warn.length?('Warnings: '+warn.join(' | ')):'All good.'),'success'); }
 }
-</script>
-</html>
