@@ -58,7 +58,7 @@ class SSHUserManager:
             return result
         
         try:
-            # Create the user
+            # Create the user with normal home directory
             success, stdout, stderr = self._exec_in_container([
                 "useradd", "-m", "-s", "/bin/bash", username
             ])
@@ -76,36 +76,39 @@ class SSHUserManager:
                 result["error"] = f"Failed to set password: {stderr}"
                 return result
             
-            # Create assignment directory structure
+            # Create simple assignment directory structure  
             success, stdout, stderr = self._exec_in_container([
                 "bash", "-c", f"""
+                # Create assignment directories directly in user home
                 mkdir -p "/home/{username}/2025/AUT/PX/Assignment1" \\
                          "/home/{username}/2025/AUT/PX/Assignment2" \\
                          "/home/{username}/2025/SPR/PX/Assignment1" \\
                          "/home/{username}/2025/SPR/PX/Assignment2"
+                
+                # Set proper ownership and permissions
+                chown -R "{username}:{username}" "/home/{username}/2025"
+                chmod 755 "/home/{username}/2025"
+                chmod -R 755 "/home/{username}/2025"
+                chmod 775 "/home/{username}/2025/AUT/PX/Assignment1" "/home/{username}/2025/AUT/PX/Assignment2" \\
+                          "/home/{username}/2025/SPR/PX/Assignment1" "/home/{username}/2025/SPR/PX/Assignment2"
                 """
             ])
             
             if not success:
-                result["error"] = f"Failed to create directories: {stderr}"
+                result["error"] = f"Failed to create chroot directories: {stderr}"
                 return result
             
-            # Set correct permissions
+            # Simple welcome message setup
             success, stdout, stderr = self._exec_in_container([
                 "bash", "-c", f"""
-                chown root:root "/home/{username}/2025" "/home/{username}/2025/AUT" "/home/{username}/2025/SPR" \\
-                                "/home/{username}/2025/AUT/PX" "/home/{username}/2025/SPR/PX"
-                chmod 755 "/home/{username}/2025" "/home/{username}/2025/AUT" "/home/{username}/2025/SPR" \\
-                          "/home/{username}/2025/AUT/PX" "/home/{username}/2025/SPR/PX"
-                chown root:"{username}" "/home/{username}/2025/AUT/PX/Assignment1" "/home/{username}/2025/AUT/PX/Assignment2" \\
-                                       "/home/{username}/2025/SPR/PX/Assignment1" "/home/{username}/2025/SPR/PX/Assignment2"
-                chmod 1770 "/home/{username}/2025/AUT/PX/Assignment1" "/home/{username}/2025/AUT/PX/Assignment2" \\
-                           "/home/{username}/2025/SPR/PX/Assignment1" "/home/{username}/2025/SPR/PX/Assignment2"
+                # Create a simple welcome message
+                echo 'echo "Welcome to Automark, {username}! Your assignment folders are in ~/2025/"' >> "/home/{username}/.bashrc"
+                chown "{username}:{username}" "/home/{username}/.bashrc"
                 """
             ])
             
             if not success:
-                result["error"] = f"Failed to set permissions: {stderr}"
+                result["error"] = f"Failed to set up user environment: {stderr}"
                 return result
             
             result["success"] = True
