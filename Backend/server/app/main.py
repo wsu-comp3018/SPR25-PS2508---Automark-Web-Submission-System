@@ -5,7 +5,8 @@ from pydantic import BaseModel, EmailStr
 import hashlib, sqlite3, uuid, datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pathlib import Pathimport logging
+from pathlib import Path
+import logging
 
 import os
 from typing import List, Optional
