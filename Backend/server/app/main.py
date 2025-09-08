@@ -9,6 +9,7 @@ from pathlib import Path
 import os
 from typing import List, Optional
 import json
+from contextlib import asynccontextmanager
 
 
 # print("Current working directory:", os.getcwd())
@@ -18,83 +19,104 @@ STATIC_DIR = BASE_DIR / "static"
 # print("Files inside STATIC_DIR:", list(STATIC_DIR.rglob("*")))
 
 
-DB_PATH = BASE_DIR / "automark.db"
+DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "automark.db"))
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    try:
+        print(f"🗃️ INIT_DB: Connecting to {DB_PATH}")
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
 
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            role TEXT CHECK(role IN ('student','lecturer')) NOT NULL,
-            first_name TEXT NOT NULL,
-            last_name TEXT NOT NULL,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL,
-            last_login TEXT
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            token TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )
+        print("📝 INIT_DB: Creating users table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT CHECK(role IN ('student','lecturer')) NOT NULL,
+                first_name TEXT NOT NULL,
+                last_name TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                last_login TEXT
+            )
     """)
 
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS folders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            description TEXT,
-            due_date TEXT,
-            max_points INTEGER DEFAULT 100,
-            status TEXT DEFAULT 'draft',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            lecturer_id INTEGER NOT NULL,
-            FOREIGN KEY (lecturer_id) REFERENCES users(id)
-        )
-    """)
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS folder_assignments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            folder_id INTEGER NOT NULL,
-            student_id INTEGER NOT NULL,
-            assigned_at TEXT NOT NULL,
-            FOREIGN KEY (folder_id) REFERENCES folders(id),
-            FOREIGN KEY (student_id) REFERENCES users(id),
-            UNIQUE(folder_id, student_id)
-        )
-    """)
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS submissions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            folder_id INTEGER NOT NULL,
-            student_id INTEGER NOT NULL,
-            submitted_at TEXT NOT NULL,
-            score INTEGER,
-            feedback TEXT,
-            status TEXT DEFAULT 'submitted',
-            graded_at TEXT,
-            FOREIGN KEY (folder_id) REFERENCES folders(id),
-            FOREIGN KEY (student_id) REFERENCES users(id)
-        )
-    """)
-    
-    
-    conn.commit()
-    conn.close()
+        print("📝 INIT_DB: Creating sessions table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+
+        print("📝 INIT_DB: Creating folders table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT,
+                due_date TEXT,
+                max_points INTEGER DEFAULT 100,
+                status TEXT DEFAULT 'draft',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                lecturer_id INTEGER NOT NULL,
+                FOREIGN KEY (lecturer_id) REFERENCES users(id)
+            )
+        """)
+        
+        print("📝 INIT_DB: Creating folder_assignments table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS folder_assignments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_id INTEGER NOT NULL,
+                student_id INTEGER NOT NULL,
+                assigned_at TEXT NOT NULL,
+                FOREIGN KEY (folder_id) REFERENCES folders(id),
+                FOREIGN KEY (student_id) REFERENCES users(id),
+                UNIQUE(folder_id, student_id)
+            )
+        """)
+        
+        print("📝 INIT_DB: Creating submissions table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS submissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_id INTEGER NOT NULL,
+                student_id INTEGER NOT NULL,
+                submitted_at TEXT NOT NULL,
+                score INTEGER,
+                feedback TEXT,
+                status TEXT DEFAULT 'submitted',
+                graded_at TEXT,
+                FOREIGN KEY (folder_id) REFERENCES folders(id),
+                FOREIGN KEY (student_id) REFERENCES users(id)
+            )
+        """)
+        
+        print("💾 INIT_DB: Committing changes...")
+        conn.commit()
+        
+        # Verify tables were created
+        c.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [t[0] for t in c.fetchall()]
+        print(f"✅ INIT_DB: Created tables: {tables}")
+        
+        conn.close()
+        print("🔐 INIT_DB: Database connection closed")
+        
+    except Exception as e:
+        print(f"❌ INIT_DB ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        if 'conn' in locals():
+            conn.close()
 
 def hash_password(pw: str) -> str:
     return hashlib.sha256(pw.encode("utf-8")).hexdigest()
@@ -102,7 +124,23 @@ def hash_password(pw: str) -> str:
 def now_iso():
     return datetime.datetime.utcnow().isoformat() + "Z"
 
-app = FastAPI(title="Automark API", version="0.2.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("🚀 LIFESPAN: Starting up application...")
+    print(f"🗃️ LIFESPAN: Database path: {DB_PATH}")
+    init_db()
+    print("✅ LIFESPAN: Database initialized")
+    yield
+    # Shutdown (nothing needed for now)
+    print("🛑 LIFESPAN: Shutting down application...")
+
+app = FastAPI(title="Automark API", version="0.2.0", lifespan=lifespan)
+
+# Force database initialization if lifespan isn't working
+import atexit
+init_db()
+atexit.register(lambda: None)  # Cleanup on exit
 
 # Mount static folder
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -162,10 +200,6 @@ class FolderUpdate(BaseModel):
 class GradeSubmission(BaseModel):
     score: int
     feedback: Optional[str] = None
-
-@app.on_event("startup")
-def _startup():
-    init_db()
 
 @app.get("/")
 async def serverIndex():

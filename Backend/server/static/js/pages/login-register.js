@@ -1,6 +1,8 @@
 // js/pages/login-register.js
 // Works with login&register.html + FastAPI backend
 
+// login-register.js loaded
+
 // -------------------------------
 // Small helpers
 // -------------------------------
@@ -70,24 +72,45 @@ function updateStrengthBar() {
 // -------------------------------
 // UI toggles
 // -------------------------------
-const container = $("container");
-const signUpBtn = $("signUp");
-const signInBtn = $("signIn");
+function initializeUI() {
+  console.log("🚀 Initializing UI...");
+  const container = $("container");
+  const signUpBtn = $("signUp");
+  const signInBtn = $("signIn");
 
-if (signUpBtn) {
-  signUpBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    container?.classList.add("right-panel-active");
-  });
+  console.log("Elements found:", { container, signUpBtn, signInBtn });
+
+  if (signUpBtn) {
+    signUpBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      console.log("Sign Up button clicked - adding right-panel-active class");
+      container?.classList.add("right-panel-active");
+    });
+    console.log("✅ Sign Up button event listener added");
+  } else {
+    console.log("❌ Sign Up button not found!");
+  }
+  if (signInBtn) {
+    signInBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      console.log("Sign In button clicked - removing right-panel-active class");
+      container?.classList.remove("right-panel-active");
+    });
+    console.log("✅ Sign In button event listener added");
+  } else {
+    console.log("❌ Sign In button not found!");
+  }
 }
-if (signInBtn) {
-  signInBtn.addEventListener("click", (e) => {
-    e.preventDefault();
-    container?.classList.remove("right-panel-active");
-  });
+
+// Initialize when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeUI);
+} else {
+  initializeUI();
 }
 
 window.toggleForms = function toggleForms() {
+  const container = $("container");
   container?.classList.toggle("right-panel-active");
 };
 
@@ -197,6 +220,7 @@ $("signupForm")?.addEventListener("submit", async (e) => {
 
     setTimeout(() => {
       hideSuccess("signup-success");
+      const container = $("container");
       container?.classList.remove("right-panel-active");
     }, 1200);
   } catch (err) {
@@ -258,6 +282,7 @@ function redirectToDashboard(user) {
 // -------------------------------
 document.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    const container = $("container");
     const active = container?.classList.contains("right-panel-active")
       ? $("signupForm")
       : $("signinForm");

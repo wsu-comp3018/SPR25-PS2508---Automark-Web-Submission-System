@@ -61,7 +61,7 @@ services:
     ports:
       - "3000:80"
     volumes:
-      - ./Frontend:/usr/share/nginx/html:ro
+      - ./Backend/server/static:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - automark-network
