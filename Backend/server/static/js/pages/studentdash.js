@@ -5,7 +5,7 @@
 const STORAGE_FOLDERS = 'automark_folders';
 const STORAGE_SUBS     = 'automark_submissions';
 const USERS_KEY        = 'automark_users';
-const SESSION_KEY      = 'automark_user';
+const SESSION_KEY      = 'automark-session';
 const FILES_KEY        = 'automark_files';
 
 /********************
@@ -29,10 +29,11 @@ function showNote(msg, type='success'){
 /********************
  * Session Guard     *
  ********************/
-const currentUser = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+const sessionData = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+const currentUser = sessionData?.user || null;
 if(!currentUser || currentUser.role !== 'student'){
   alert('Not signed in as student. Redirecting to login.');
-  window.location.href = 'Login and Registration.html';
+  window.location.href = 'login&register.html';
 }
 $('greeting').textContent = `Hi, ${currentUser.firstName || currentUser.username}`;
 
@@ -441,8 +442,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // logout
   $('logoutBtn').addEventListener('click', () => {
-    localStorage.removeItem('automark_token');
-    localStorage.removeItem('automark_user');
+    localStorage.removeItem(SESSION_KEY);
     window.location.href = 'login&register.html';
   });
 

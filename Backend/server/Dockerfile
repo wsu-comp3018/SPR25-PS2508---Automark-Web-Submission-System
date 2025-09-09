@@ -6,7 +6,14 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Docker CLI for SSH user management
+RUN curl -fsSL https://download.docker.com/linux/static/stable/aarch64/docker-24.0.7.tgz -o docker.tgz && \
+    tar xzvf docker.tgz && \
+    mv docker/docker /usr/local/bin/ && \
+    rm -rf docker docker.tgz
 
 # Copy requirements first for better caching
 COPY requirements.txt .
