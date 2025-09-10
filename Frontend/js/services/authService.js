@@ -6,10 +6,10 @@ export async function register(payload) {
   return fetchJSON("/auth/register", { method: "POST", body: payload });
 }
 
-export async function login({ username, password, remember_me }) {
+export async function login({ username, password}) {
   const data = await fetchJSON("/auth/login", {
     method: "POST",
-    body: { username, password, remember_me: !!remember_me }
+    body: { username, password }
   });
   if (data?.token) saveSession({ token: data.token, user: data.user });
   return data;
