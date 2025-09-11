@@ -1,14 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>AutoMark — Student Dashboard</title>
   <link rel="stylesheet" type="text/css" href="/css/pages/studentdash.css" />
-
+ 
 </head>
-
 <body>
   <header>
     <div class="brand">
@@ -24,39 +22,26 @@
       <button id="logoutBtn" class="ghost">Sign out</button>
     </div>
   </header>
-
+ 
   <div class="stats">
-    <div class="stat">
-      <div class="number" id="statActive">0</div>
-      <div class="label">Active Tasks</div>
-    </div>
-    <div class="stat">
-      <div class="number" id="statSubmitted">0</div>
-      <div class="label">My Submissions</div>
-    </div>
-    <div class="stat">
-      <div class="number" id="statDueSoon">0</div>
-      <div class="label">Due in 7 Days</div>
-    </div>
-    <div class="stat">
-      <div class="number" id="statGraded">0</div>
-      <div class="label">Graded</div>
-    </div>
+    <div class="stat"><div class="number" id="statActive">0</div><div class="label">Active Tasks</div></div>
+    <div class="stat"><div class="number" id="statSubmitted">0</div><div class="label">My Submissions</div></div>
+    <div class="stat"><div class="number" id="statDueSoon">0</div><div class="label">Due in 7 Days</div></div>
+    <div class="stat"><div class="number" id="statGraded">0</div><div class="label">Graded</div></div>
   </div>
-
+ 
   <div class="layout">
     <aside class="panel">
       <h3 style="margin-top:0">Assigned to Me</h3>
-      <div class="small">Only assignments that your lecturer has made <strong>Active</strong> and assigned to you are
-        shown.</div>
-
+      <div class="small">Only assignments that your lecturer has made <strong>Active</strong> and assigned to you are shown.</div>
+ 
       <div class="search-box" style="margin-top:12px">
         <input id="searchBox" placeholder="Search by name or description..." />
       </div>
-
+ 
       <div id="sidebarList" class="list"></div>
     </aside>
-
+ 
     <main class="panel">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h3 style="margin:0">Assignments</h3>
@@ -67,9 +52,9 @@
       <div id="mainList" class="list"></div>
     </main>
   </div>
-
+ 
   <div id="notification" class="notification"></div>
 </body>
 <script type="module" src="/js/pages/studentdash.js"></script>
-
 </html>
+ 
