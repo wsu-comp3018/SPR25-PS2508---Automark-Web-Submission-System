@@ -1,14 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>AutoMark — Student Dashboard</title>
+  <link rel="stylesheet" type="text/css" href="/css/pages/studentdash.css" />
+ 
 </head>
-
 <body>
-   <header>
+  <header>
     <div class="brand">
       <div class="logo">🎓 AutoMark</div>
       <div>
@@ -31,6 +31,17 @@
   </div>
 
   <div class="layout">
+    <aside class="panel">
+      <h3 style="margin-top:0">Assigned to Me</h3>
+      <div class="small">Only assignments that your lecturer has made <strong>Active</strong> and assigned to you are shown.</div>
+
+      <div class="search-box" style="margin-top:12px">
+        <input id="searchBox" placeholder="Search by name or description..." />
+      </div>
+
+      <div id="sidebarList" class="list"></div>
+    </aside>
+
     <main class="panel">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h3 style="margin:0">Assignments</h3>
@@ -44,4 +55,5 @@
 
   <div id="notification" class="notification"></div>
 </body>
+<script type="module" src="/js/pages/studentdash.js"></script>
 </html>
