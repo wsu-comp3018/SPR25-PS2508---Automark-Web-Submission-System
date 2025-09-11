@@ -183,3 +183,31 @@ make logs-api
 # Reset database if needed
 make db-reset
 ```
+
+# Build & start API + SSH + Web
+docker compose up -d --build automark-api automark-ssh automark-web
+
+# Health
+curl -s http://127.0.0.1:8000/health | python3 -m json.tool
+
+# Register/login smoke
+curl -s -X POST http://127.0.0.1:8000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"smoke","email":"smoke@ex.com","password":"Secret2!","role":"student","first_name":"Smoke","last_name":"Test"}' | python3 -m json.tool
+
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"smoke","password":"Secret2!","remember_me":true}' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+
+RESP=$(curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"folder_id":1,"content":"compose-test"}' \
+  http://127.0.0.1:8000/api/v1/submissions/receive)
+
+echo "$RESP" | python3 -m json.tool
+SID=$(python3 -c 'import sys,json; print(json.load(sys.stdin)["submission_id"])' <<<"$RESP")
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/v1/submissions/$SID | python3 -m json.tool
+
+# Optionally check API logs for sandbox line(s)
+docker logs automark-api --since 5m | egrep 'sandbox|submission' || true
+

@@ -1,29 +1,32 @@
 FROM ubuntu:latest
 
-RUN apt-get update && apt-get install -y \
-    sudo \
+ENV DEBIAN_FRONTEND=noninteractive TZ=Australia/Sydney
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server \
     nano \
     git \
-    && rm -rf /var/lib/apt/lists/*
+    procps \
+    netcat-openbsd \
+ && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir /var/run/sshd
 
-# Copy user creation script and user database CSV
 COPY create_users.sh /create_users.sh
 COPY students.csv /students.csv
-
 RUN chmod +x /create_users.sh
 
-# SSH config for demo/testing (adjust for production use)
-RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
-    sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
-    sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+# Dev-only SSH config tweaks (lock down for prod!)
+RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+ && sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+ && sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 
-# Set TimeZone
-RUN ln -sf /usr/share/zoneinfo/Australia/Sydney /etc/localtime
+# Timezone already set via ENV
+RUN ln -sf /usr/share/zoneinfo/$TZ /etc/localtime
 
 EXPOSE 22
 
-# On container start: create users, set up assignment dirs, start SSH server
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD pgrep -x sshd >/dev/null || exit 1
+
 CMD ["/create_users.sh"]

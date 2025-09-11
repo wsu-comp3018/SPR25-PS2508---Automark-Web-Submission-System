@@ -1,5 +1,4 @@
-version: '3.8'
-
+# (you can remove the 'version:' line to silence the compose warning)
 services:
   # FastAPI Backend Server
   automark-api:
@@ -13,34 +12,32 @@ services:
       - DB_PATH=/app/data/automark.db
       - UPLOAD_DIR=/app/uploads
       - PYTHONPATH=/app
+      - SANDBOX_IMAGE=automark-sandbox:latest        # <-- added
     volumes:
-      # Persist database and uploads
       - automark-data:/app/data
       - automark-uploads:/app/uploads
-      # Mount source code for development (hot reload)
       - ./Backend/server:/app
+      - /var/run/docker.sock:/var/run/docker.sock    # <-- added (lets API run containers)
     networks:
       - automark-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
 
   # SSH Server for Assignment Submissions
+    # SSH Server for Assignment Submissions
   automark-ssh:
     build:
       context: ./Backend/docker
-      dockerfile: Dockerfile
     container_name: automark-ssh
     ports:
       - "2222:22"
     volumes:
-      # Persist student submissions
       - automark-submissions:/home
-      # Allow shared access to submissions from API server
       - automark-submissions:/shared/submissions:ro
     networks:
       - automark-network
@@ -48,7 +45,7 @@ services:
     environment:
       - TZ=Australia/Sydney
     healthcheck:
-      test: ["CMD", "systemctl", "is-active", "ssh"]
+      test: ["CMD-SHELL", "pgrep -x sshd >/dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -74,8 +71,17 @@ services:
       timeout: 10s
       retries: 3
 
+  # Sandbox image (built once, run on demand by API)  <-- added
+  automark-sandbox:
+    build:
+      context: ./Backend/sandbox
+      dockerfile: Dockerfile
+    image: automark-sandbox:latest
+    networks:
+      - automark-network
+    restart: "no"
+
 volumes:
-  # Persistent storage for database and files
   automark-data:
     driver: local
   automark-uploads:
