@@ -1,479 +1,316 @@
-// lecturer-dashboard.js - Complete integration with FastAPI backend
-const API_BASE = "/api/v1";
-let currentUser = null;
-let folders = [];
-let students = [];
-let submissions = [];
-let currentFolderView = null;
+// lecturer-dashboard.js - LocalStorage-based dashboard code
+const STORAGE_FOLDERS = 'automark_folders';
+const STORAGE_SUBS = 'automark_submissions';
+const USERS_KEY = 'automark_users';
+const SESSION_KEY = 'automark_user';
+const FILES_KEY = 'automark_files';
 
-// DOM Elements
-const lecturerNameEl = document.getElementById('lecturerName');
-const logoutBtn = document.getElementById('logoutBtn');
-const stats = {
-    totalFolders: document.getElementById('totalFolders'),
-    totalStudents: document.getElementById('totalStudents'),
-    totalSubmissions: document.getElementById('totalSubmissions'),
-    pendingReview: document.getElementById('pendingReview')
-};
+function $(id){return document.getElementById(id)}
+function loadJSON(key){ return JSON.parse(localStorage.getItem(key) || '[]') }
+function saveJSON(key, obj){ localStorage.setItem(key, JSON.stringify(obj)) }
+function uid(prefix='id'){ return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8) }
 
-// Initialize dashboard
-async function initializeDashboard() {
-    // Check authentication
-    const token = localStorage.getItem('automark_token');
-    const userData = localStorage.getItem('automark_user');
-    
-    if (!token || !userData) {
-        window.location.href = '/';
-        return;
-    }
-    
-    currentUser = JSON.parse(userData);
-    if (currentUser.role !== 'lecturer') {
-        window.location.href = '/dashboard';
-        return;
-    }
-    
-    // Update UI
-    lecturerNameEl.textContent = `Welcome, ${currentUser.firstName} ${currentUser.lastName}`;
-    logoutBtn.addEventListener('click', handleLogout);
-    
-    // Load initial data
-    await loadAllData();
-    setupEventListeners();
+// Global state
+let expandedFolders = new Set();
+let filteredStudents = [];
+
+function showNotification(message, type = 'success') {
+  const notification = $('notification');
+  notification.textContent = message;
+  notification.className = `notification ${type} show`;
+  setTimeout(() => {
+    notification.classList.remove('show');
+  }, 3000);
 }
 
-// Load all required data
-async function loadAllData() {
-    try {
-        showLoading();
-        await Promise.all([
-            loadFolders(),
-            loadStudents(),
-            loadSubmissions()
-        ]);
-        updateStats();
-        renderFolderList();
-        renderStudentSearch();
-    } catch (error) {
-        console.error('Error loading data:', error);
-        showNotification('Failed to load data. Please refresh.', 'error');
-    } finally {
-        hideLoading();
-    }
+const currentUser = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+if(!currentUser || currentUser.role !== 'lecturer'){
+  alert('Not signed in as lecturer. Redirecting to login.');
+  window.location.href = 'Login and Registration.html';
+}
+$('lecturerName').textContent = `Hi, ${currentUser.firstName || currentUser.username}`;
+let allUsers = loadJSON(USERS_KEY);
+const students = allUsers.filter(u => u.role === 'student');
+filteredStudents = [...students];
+
+function saveFiles(files, callback) {
+  let savedFiles = [];
+  let processed = 0;
+  if (files.length === 0) {
+    callback([]);
+    return;
+  }
+  Array.from(files).forEach(file => {
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const fileData = {
+        id: uid('file'),
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        lastModified: file.lastModified,
+        content: e.target.result.split(',')[1],
+        uploaderId: currentUser ? currentUser.id : null,
+        uploadedAt: new Date().toISOString()
+      };
+      const existingFiles = loadJSON(FILES_KEY) || [];
+      existingFiles.push(fileData);
+      saveJSON(FILES_KEY, existingFiles);
+      savedFiles.push(fileData.id);
+      processed++;
+      if (processed === files.length) {
+        callback(savedFiles);
+      }
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
-// API Functions
-async function loadFolders() {
-    try {
-        const response = await fetch(`${API_BASE}/folders`, {
-            headers: getAuthHeaders()
-        });
-        
-        if (response.status === 401) {
-            handleAuthError();
-            return;
-        }
-        
-        if (!response.ok) {
-            throw new Error(`Failed to load folders: ${response.status}`);
-        }
-        
-        folders = await response.json();
-    } catch (error) {
-        console.error('Error loading folders:', error);
-        throw error;
-    }
+function getFile(fileId) {
+  const files = loadJSON(FILES_KEY) || [];
+  return files.find(f => f.id === fileId);
 }
 
-async function loadStudents() {
-    try {
-        const response = await fetch(`${API_BASE}/students`, {
-            headers: getAuthHeaders()
-        });
-        
-        if (response.status === 401) {
-            handleAuthError();
-            return;
-        }
-        
-        if (!response.ok) {
-            throw new Error(`Failed to load students: ${response.status}`);
-        }
-        
-        students = await response.json();
-    } catch (error) {
-        console.error('Error loading students:', error);
-        throw error;
-    }
+function downloadFile(fileId, fileName) {
+  const file = getFile(fileId);
+  if (!file) return;
+  const link = document.createElement('a');
+  link.href = `data:${file.type};base64,${file.content}`;
+  link.download = fileName || file.name;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
 }
 
-async function loadSubmissions() {
-    try {
-        const response = await fetch(`${API_BASE}/submissions`, {
-            headers: getAuthHeaders()
-        });
-        
-        if (response.status === 401) {
-            handleAuthError();
-            return;
-        }
-        
-        if (!response.ok) {
-            throw new Error(`Failed to load submissions: ${response.status}`);
-        }
-        
-        submissions = await response.json();
-    } catch (error) {
-        console.error('Error loading submissions:', error);
-        throw error;
+function getFolders(){ return loadJSON(STORAGE_FOLDERS) }
+function saveFolders(f){ saveJSON(STORAGE_FOLDERS,f) }
+function getSubs(){ return loadJSON(STORAGE_SUBS) }
+function saveSubs(s){ saveJSON(STORAGE_SUBS,s) }
+
+function createFolder(name, assignedTo=[], fileIds=[], description='', dueDate='', maxPoints='', status='active', ownerId = null, parentSubject = null){
+  if(!name || !name.toString().trim()) return false;
+  const folders = getFolders();
+  const resolvedOwnerId = ownerId ?? (currentUser ? currentUser.id : null);
+  const resolvedOwnerUsername = (() => {
+    if (resolvedOwnerId) {
+      const u = allUsers.find(x => x.id === resolvedOwnerId);
+      return u ? u.username : (currentUser ? currentUser.username : null);
     }
+    return currentUser ? currentUser.username : null;
+  })();
+  const newFolder = { 
+    id: uid('folder'), 
+    name: name.toString().trim(), 
+    description: description.toString().trim(),
+    assignedTo, 
+    fileIds,
+    dueDate,
+    maxPoints: maxPoints ? parseInt(maxPoints) : null,
+    status,
+    subfolders: [], 
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ownerId: resolvedOwnerId,
+    ownerUsername: resolvedOwnerUsername,
+    parentSubject: parentSubject,
+    isAssignment: true
+  };
+  if (parentSubject) {
+    const subjectFolder = folders.find(f => f.name === parentSubject && f.isSubject);
+    if (subjectFolder) {
+      subjectFolder.subfolders.push(newFolder);
+      subjectFolder.updatedAt = new Date().toISOString();
+    }
+  } else {
+    folders.push(newFolder);
+  }
+  saveFolders(folders); 
+  showNotification(`Assignment "${name}" created successfully!`);
+  renderFolderList();
+  updateStatistics();
+  return true;
 }
 
-async function createFolder(folderData) {
-    try {
-        const response = await fetch(`${API_BASE}/folders`, {
-            method: 'POST',
-            headers: getAuthHeaders('json'),
-            body: JSON.stringify(folderData)
-        });
-        
-        if (response.status === 401) {
-            handleAuthError();
-            return null;
-        }
-        
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || 'Failed to create folder');
-        }
-        
-        return await response.json();
-    } catch (error) {
-        console.error('Error creating folder:', error);
-        throw error;
-    }
+function createSubfolder(parentId, name, assignedTo=[], fileIds=[], description='', dueDate='', maxPoints='', status='active'){
+  const folders = getFolders();
+  const parent = findFolderById(folders, parentId);
+  if(!parent) return false;
+  const newSubfolder = { 
+    id: uid('sub'), 
+    name: name.toString().trim(), 
+    description: description.toString().trim(),
+    assignedTo, 
+    fileIds,
+    dueDate,
+    maxPoints: maxPoints ? parseInt(maxPoints) : null,
+    status,
+    subfolders: [], 
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ownerId: parent.ownerId ?? (currentUser ? currentUser.id : null),
+    ownerUsername: parent.ownerUsername ?? (currentUser ? currentUser.username : null),
+    isAssignment: true
+  };
+  parent.subfolders.push(newSubfolder);
+  parent.updatedAt = new Date().toISOString();
+  saveFolders(folders); 
+  showNotification(`Sub-assignment "${name}" created successfully!`);
+  renderFolderList();
+  updateStatistics();
+  return true;
 }
 
-async function updateFolder(folderId, folderData) {
-    try {
-        const response = await fetch(`${API_BASE}/folders/${folderId}`, {
-            method: 'PUT',
-            headers: getAuthHeaders('json'),
-            body: JSON.stringify(folderData)
-        });
-        
-        if (response.status === 401) {
-            handleAuthError();
-            return null;
-        }
-        
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || 'Failed to update folder');
-        }
-        
-        return await response.json();
-    } catch (error) {
-        console.error('Error updating folder:', error);
-        throw error;
+function findFolderById(list, id, path = []){
+  for(const f of list){
+    const currentPath = [...path, f];
+    if(f.id === id) return f;
+    if(f.subfolders?.length){
+      const sub = findFolderById(f.subfolders, id, currentPath);
+      if(sub) return sub;
     }
+  }
+  return null;
 }
 
-async function deleteFolder(folderId) {
-    try {
-        const response = await fetch(`${API_BASE}/folders/${folderId}`, {
-            method: 'DELETE',
-            headers: getAuthHeaders()
-        });
-        
-        if (response.status === 401) {
-            handleAuthError();
-            return false;
-        }
-        
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || 'Failed to delete folder');
-        }
-        
+function removeFolderById(list, id){
+  for(let i=0;i<list.length;i++){
+    if(list[i].id===id){ 
+      list.splice(i,1); 
+      return true;
+    }
+    if(list[i].subfolders?.length){
+      if(removeFolderById(list[i].subfolders, id)) {
+        list[i].updatedAt = new Date().toISOString();
         return true;
-    } catch (error) {
-        console.error('Error deleting folder:', error);
-        throw error;
+      }
     }
+  }
+  return false;
 }
 
-async function gradeSubmission(submissionId, gradeData) {
-    try {
-        const response = await fetch(`${API_BASE}/submissions/${submissionId}/grade`, {
-            method: 'POST',
-            headers: getAuthHeaders('json'),
-            body: JSON.stringify(gradeData)
-        });
-        
-        if (response.status === 401) {
-            handleAuthError();
-            return null;
+function updateFolder(folderId, updates) {
+  const folders = getFolders();
+  const folder = findFolderById(folders, folderId);
+  if (!folder) return false;
+  Object.assign(folder, updates, { updatedAt: new Date().toISOString() });
+  if (updates.assignedTo && folder.subfolders?.length) {
+    function updateSubfolders(subfolders) {
+      subfolders.forEach(sub => {
+        sub.assignedTo = sub.assignedTo.filter(id => updates.assignedTo.includes(id));
+        sub.updatedAt = new Date().toISOString();
+        if (sub.subfolders?.length) {
+          updateSubfolders(sub.subfolders);
         }
-        
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || 'Failed to grade submission');
-        }
-        
-        return await response.json();
-    } catch (error) {
-        console.error('Error grading submission:', error);
-        throw error;
+      });
     }
+    updateSubfolders(folder.subfolders);
+  }
+  saveFolders(folders);
+  return true;
 }
 
-// UI Rendering Functions
-function renderFolderList() {
-    const folderList = document.getElementById('folderList');
-    if (!folderList) return;
-    
-    if (folders.length === 0) {
-        folderList.innerHTML = `
-            <div class="empty-state">
-                <h4>No folders yet</h4>
-                <p>Create your first assignment folder to get started.</p>
-            </div>
-        `;
-        return;
+function getLecturerSubjects() {
+  if (!currentUser) return [];
+  const subjects = [];
+  if (Array.isArray(currentUser.subjects)) {
+    subjects.push(...currentUser.subjects);
+  }
+  if (Array.isArray(currentUser.secondarySubjects)) {
+    subjects.push(...currentUser.secondarySubjects);
+  }
+  return subjects.map(s => (s || '').toString().trim()).filter(Boolean);
+}
+
+function folderIsVisibleToLecturer(folder) {
+  const subjects = getLecturerSubjects();
+  if (!folder) return false;
+  if (subjects.includes(folder.name)) return true;
+  if (folder.ownerId && currentUser && folder.ownerId === currentUser.id) return true;
+  return false;
+}
+
+function gatherVisibleFolders(nodes) {
+  const result = [];
+  nodes.forEach(node => {
+    const visibleChildren = node.subfolders && node.subfolders.length ? gatherVisibleFolders(node.subfolders) : [];
+    if (folderIsVisibleToLecturer(node)) {
+      const copy = Object.assign({}, node, { subfolders: visibleChildren });
+      result.push(copy);
+    } else {
+      visibleChildren.forEach(child => result.push(child));
     }
-    
-    folderList.innerHTML = folders.map(folder => `
-        <div class="folder-item" data-folder-id="${folder.id}">
-            <div class="folder-header">
-                <div class="folder-info">
-                    <h4>${folder.name}</h4>
-                    <div class="folder-meta">
-                        <span class="status-badge ${folder.status}">${folder.status}</span>
-                        <span>Due: ${folder.due_date ? new Date(folder.due_date).toLocaleDateString() : 'No due date'}</span>
-                        <span>${folder.assigned_students_count || 0} students assigned</span>
-                    </div>
-                </div>
-                <div class="folder-actions">
-                    <button class="icon-btn view-subs" title="View submissions">📋</button>
-                    <button class="icon-btn edit-folder" title="Edit folder">✏️</button>
-                    <button class="icon-btn delete-folder" title="Delete folder">🗑️</button>
-                </div>
-            </div>
-            <div class="folder-details" style="display: none;">
-                <p>${folder.description || 'No description'}</p>
-                <div class="assigned-students">
-                    <strong>Assigned to:</strong> ${folder.assigned_students_count || 0} students
-                </div>
-            </div>
-        </div>
-    `).join('');
-    
-    // Add event listeners to folder items
-    document.querySelectorAll('.folder-item').forEach(item => {
-        item.querySelector('.folder-header').addEventListener('click', (e) => {
-            if (!e.target.closest('.folder-actions')) {
-                toggleFolderDetails(item);
-            }
-        });
-        
-        item.querySelector('.view-subs').addEventListener('click', (e) => {
-            e.stopPropagation();
-            const folderId = item.dataset.folderId;
-            viewSubmissions(folderId);
-        });
-        
-        item.querySelector('.edit-folder').addEventListener('click', (e) => {
-            e.stopPropagation();
-            const folderId = item.dataset.folderId;
-            editFolder(folderId);
-        });
-        
-        item.querySelector('.delete-folder').addEventListener('click', (e) => {
-            e.stopPropagation();
-            const folderId = item.dataset.folderId;
-            deleteFolderPrompt(folderId);
-        });
-    });
+  });
+  return result;
 }
 
-function renderStudentSearch() {
-    const assignUserList = document.getElementById('assignUserList');
-    if (!assignUserList) return;
-    
-    assignUserList.innerHTML = students.map(student => `
-        <label class="student-checkbox">
-            <input type="checkbox" name="assignedStudents" value="${student.id}">
-            ${student.first_name} ${student.last_name} (${student.username})
-        </label>
-    `).join('');
+function collectAllIds(nodes, set) {
+  nodes.forEach(n => {
+    set.add(n.id);
+    if (n.subfolders && n.subfolders.length) collectAllIds(n.subfolders, set);
+  });
 }
 
-function updateStats() {
-    stats.totalFolders.textContent = folders.length;
-    stats.totalStudents.textContent = students.length;
-    stats.totalSubmissions.textContent = submissions.length;
-    stats.pendingReview.textContent = submissions.filter(s => s.status === 'submitted').length;
+function getVisibleFolders() {
+  const all = getFolders();
+  return gatherVisibleFolders(all);
 }
 
-// Event Handlers
-function setupEventListeners() {
-    // Create folder form
-    const createFolderBtn = document.getElementById('createFolderBtn');
-    if (createFolderBtn) {
-        createFolderBtn.addEventListener('click', handleCreateFolder);
-    }
-    
-    // Reset form
-    const resetFoldersBtn = document.getElementById('resetFoldersBtn');
-    if (resetFoldersBtn) {
-        resetFoldersBtn.addEventListener('click', resetFolderForm);
-    }
-    
-    // Quick actions
-    document.getElementById('showAllSubs')?.addEventListener('click', showAllSubmissions);
-    document.getElementById('exportData')?.addEventListener('click', exportData);
-    document.getElementById('bulkAssign')?.addEventListener('click', showBulkAssignModal);
-    
-    // Expand/Collapse buttons
-    document.getElementById('expandAllBtn')?.addEventListener('click', expandAllFolders);
-    document.getElementById('collapseAllBtn')?.addEventListener('click', collapseAllFolders);
+function filterStudents(searchId = 'studentSearch') {
+  const query = $(searchId).value.toLowerCase();
+  filteredStudents = students.filter(student => {
+    const name = (student.firstName || student.username).toLowerCase();
+    const email = (student.email || '').toLowerCase();
+    return name.includes(query) || email.includes(query);
+  });
+  renderAssignList();
 }
 
-async function handleCreateFolder() {
-    const folderData = {
-        name: document.getElementById('newFolderName').value.trim(),
-        description: document.getElementById('folderDescription').value.trim(),
-        due_date: document.getElementById('folderDueDate').value,
-        max_points: parseInt(document.getElementById('folderMaxPoints').value) || 100,
-        status: document.getElementById('folderStatus').value,
-        student_ids: Array.from(document.querySelectorAll('input[name="assignedStudents"]:checked'))
-            .map(checkbox => parseInt(checkbox.value))
-    };
-    
-    if (!folderData.name) {
-        showNotification('Folder name is required', 'error');
-        return;
-    }
-    
-    try {
-        const newFolder = await createFolder(folderData);
-        if (newFolder) {
-            showNotification('Folder created successfully', 'success');
-            resetFolderForm();
-            await loadAllData(); // Reload data
-        }
-    } catch (error) {
-        showNotification(error.message, 'error');
-    }
-}
-
-function handleLogout() {
-    localStorage.removeItem('automark_token');
-    localStorage.removeItem('automark_user');
-    window.location.href = '/';
-}
-
-// Utility Functions
-function getAuthHeaders(contentType = null) {
-    const headers = {
-        'Authorization': `Bearer ${localStorage.getItem('automark_token')}`
-    };
-    
-    if (contentType === 'json') {
-        headers['Content-Type'] = 'application/json';
-    }
-    
-    return headers;
-}
-
-function handleAuthError() {
-    showNotification('Session expired. Please login again.', 'error');
-    setTimeout(() => {
-        handleLogout();
-    }, 2000);
-}
-
-function showNotification(message, type = 'info') {
-    const notification = document.getElementById('notification');
-    if (notification) {
-        notification.textContent = message;
-        notification.className = `notification ${type}`;
-        notification.style.display = 'block';
-        
-        setTimeout(() => {
-            notification.style.display = 'none';
-        }, 3000);
-    }
-}
-
-function showLoading() {
-    // Implement loading indicator
-    document.body.style.cursor = 'wait';
-}
-
-function hideLoading() {
-    document.body.style.cursor = 'default';
-}
-
-// Placeholder functions for unimplemented features
-function toggleFolderDetails(item) {
-    const details = item.querySelector('.folder-details');
-    details.style.display = details.style.display === 'none' ? 'block' : 'none';
-}
-
-function viewSubmissions(folderId) {
-    const folder = folders.find(f => f.id == folderId);
-    if (folder) {
-        currentFolderView = folderId;
-        // Show submissions view
-        document.getElementById('subViewer').style.display = 'block';
-        document.getElementById('subViewerFolderName').textContent = folder.name;
-        renderSubmissions(folderId);
-    }
-}
-
-function renderSubmissions(folderId) {
-    const folderSubmissions = submissions.filter(s => s.folder_id == folderId);
-    const container = document.getElementById('submissionsContainer');
-    
-    if (folderSubmissions.length === 0) {
-        container.innerHTML = '<p>No submissions yet.</p>';
-        return;
-    }
-    
-    container.innerHTML = folderSubmissions.map(sub => `
-        <div class="submission-item">
-            <div class="submission-info">
-                <strong>${getStudentName(sub.student_id)}</strong>
-                <span>Submitted: ${new Date(sub.submitted_at).toLocaleString()}</span>
-                <span class="status-badge ${sub.status}">${sub.status}</span>
-            </div>
-            <div class="submission-actions">
-                <button class="grade-btn" data-submission-id="${sub.id}">Grade</button>
-            </div>
-        </div>
-    `).join('');
-}
-
-function getStudentName(studentId) {
-    const student = students.find(s => s.id == studentId);
-    return student ? `${student.first_name} ${student.last_name}` : 'Unknown Student';
-}
-
-function resetFolderForm() {
-    document.getElementById('newFolderName').value = '';
-    document.getElementById('folderDescription').value = '';
-    document.getElementById('folderDueDate').value = '';
-    document.getElementById('folderMaxPoints').value = '100';
-    document.getElementById('folderStatus').value = 'draft';
-    document.querySelectorAll('input[name="assignedStudents"]').forEach(checkbox => {
-        checkbox.checked = false;
-    });
+function renderAssignList(containerId = 'assignUserList', selectedIds = []){
+  const container = $(containerId);
+  if (!container) return;
+  container.innerHTML = '';
+  if(filteredStudents.length === 0){
+    container.innerHTML = '<div class="muted">No students found</div>';
+    return;
+  }
+  filteredStudents.forEach(student => {
+    const div = document.createElement('div');
+    div.className = 'student-item';
+    const isSelected = selectedIds.includes(student.id);
+    div.innerHTML = `
+      <input type="checkbox" id="${containerId}-${student.id}" value="${student.id}" ${isSelected ? 'checked' : ''}>
+      <label for="${containerId}-${student.id}">
+        ${student.firstName || student.username} 
+        <span class="small">(${student.email})</span>
+      </label>
+    `;
+    container.appendChild(div);
+  });
 }
 
 // Initialize when DOM is loaded
-document.addEventListener('DOMContentLoaded', initializeDashboard);
+document.addEventListener('DOMContentLoaded', () => {
+  // Check authentication
+  const token = localStorage.getItem('automark_token');
+  const userData = localStorage.getItem('automark_user');
+  
+  if (!token || !userData) {
+      window.location.href = '/';
+      return;
+  }
+  
+  currentUser = JSON.parse(userData);
+  if (currentUser.role !== 'lecturer') {
+      window.location.href = '/dashboard';
+      return;
+  }
+  
+  // Update UI
+  $('lecturerName').textContent = `Hi, ${currentUser.firstName || currentUser.username}`;
+  
+  // Load initial data
+  loadAllData();
+});
 
 // Export functions for HTML onclick handlers
 window.deleteSelectedUsers = () => showNotification('Please use the individual folder actions', 'info');
