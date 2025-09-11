@@ -1,226 +1,173 @@
 #!/usr/bin/env python3
 """
-SSH User Management Script
-Manages SSH users in the automark-ssh container via docker exec
+SSH User Management (Docker SDK)
+- Matches main.py expectations:
+  * create_ssh_user_for_registration(username, password) -> dict
+  * class SSHUserManager with list_users() / delete_user(username)
+- Talks to the 'automark-ssh' container via the host Docker socket.
 """
 
-import subprocess
-import logging
 import os
-from typing import Optional, Dict, Any
+import logging
+from typing import Dict, Any
+
+try:
+    import docker  # pip: docker>=7,<8
+except Exception as e:  # Keep import-time error visible in logs
+    docker = None
 
 logger = logging.getLogger(__name__)
 
+_SSH_CONTAINER_NAME = os.getenv("SSH_CONTAINER_NAME", "automark-ssh")
+
+
 class SSHUserManager:
-    def __init__(self, container_name: str = "automark-ssh"):
-        self.container_name = container_name
-    
-    def _exec_in_container(self, command: list[str]) -> tuple[bool, str, str]:
-        """
-        Execute a command in the SSH container
-        Returns: (success, stdout, stderr)
-        """
+    def __init__(self, container_name: str = None):
+        self.container_name = container_name or _SSH_CONTAINER_NAME
+        if docker is None:
+            raise RuntimeError("Python Docker SDK not available. Ensure 'docker' is in requirements.")
+        self.client = docker.from_env()
+
+    def _container(self):
         try:
-            cmd = ["docker", "exec", self.container_name] + command
-            result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=True, 
-                timeout=30
-            )
-            return result.returncode == 0, result.stdout, result.stderr
-        except subprocess.TimeoutExpired:
-            return False, "", "Command timed out"
+            return self.client.containers.get(self.container_name)
         except Exception as e:
-            return False, "", str(e)
-    
+            raise RuntimeError(f"SSH container '{self.container_name}' not found: {e}")
+
+    def _exec_sh(self, sh_cmd: str) -> tuple[int, str]:
+        """
+        Run a shell command inside the SSH container and return (exit_code, output_text).
+        Uses /bin/bash -lc to allow pipes and globs.
+        """
+        c = self._container()
+        res = c.exec_run(["bash", "-lc", sh_cmd])
+        # docker SDK v7 returns ExecResult with .exit_code and .output
+        if hasattr(res, "exit_code"):
+            code, out = res.exit_code, res.output
+        else:  # fallback for tuple style
+            code, out = res
+        text = out.decode(errors="ignore") if isinstance(out, (bytes, bytearray)) else str(out)
+        return int(code), text
+
+    # ---------- helpers ----------
     def user_exists(self, username: str) -> bool:
-        """Check if a user already exists in the SSH container"""
-        success, stdout, stderr = self._exec_in_container(["id", username])
-        return success
-    
+        code, _ = self._exec_sh(f"id -u {username} >/dev/null 2>&1 || exit 1")
+        return code == 0
+
+    # ---------- public API expected by main.py ----------
     def create_user(self, username: str, password: str) -> Dict[str, Any]:
-        """
-        Create a new SSH user in the container
-        Returns dict with success status and details
-        """
-        result = {
-            "success": False,
-            "username": username,
-            "message": "",
-            "error": None
-        }
-        
-        # Check if user already exists
-        if self.user_exists(username):
-            result["message"] = f"User '{username}' already exists"
-            result["success"] = True  # Not an error, user exists
-            return result
-        
+        result = {"success": False, "username": username, "message": "", "error": None}
+
         try:
-            # Create the user with normal home directory
-            success, stdout, stderr = self._exec_in_container([
-                "useradd", "-m", "-s", "/bin/bash", username
-            ])
-            
-            if not success:
-                result["error"] = f"Failed to create user: {stderr}"
+            if self.user_exists(username):
+                result["success"] = True
+                result["message"] = f"User '{username}' already exists"
                 return result
-            
-            # Set password
-            success, stdout, stderr = self._exec_in_container([
-                "bash", "-c", f"echo '{username}:{password}' | chpasswd"
-            ])
-            
-            if not success:
-                result["error"] = f"Failed to set password: {stderr}"
+
+            # create user with home and bash shell
+            code, out = self._exec_sh(f"useradd -m -s /bin/bash {username}")
+            if code != 0:
+                result["error"] = f"Failed to create user: {out}"
                 return result
-            
-            # Create simple assignment directory structure  
-            success, stdout, stderr = self._exec_in_container([
-                "bash", "-c", f"""
-                # Create assignment directories directly in user home
-                mkdir -p "/home/{username}/2025/AUT/PX/Assignment1" \\
-                         "/home/{username}/2025/AUT/PX/Assignment2" \\
-                         "/home/{username}/2025/SPR/PX/Assignment1" \\
+
+            # set password
+            code, out = self._exec_sh(f"echo '{username}:{password}' | chpasswd")
+            if code != 0:
+                result["error"] = f"Failed to set password: {out}"
+                return result
+
+            # create simple assignment folders and set perms
+            code, out = self._exec_sh(
+                f"""
+                set -e
+                mkdir -p "/home/{username}/2025/AUT/PX/Assignment1" \
+                         "/home/{username}/2025/AUT/PX/Assignment2" \
+                         "/home/{username}/2025/SPR/PX/Assignment1" \
                          "/home/{username}/2025/SPR/PX/Assignment2"
-                
-                # Set proper ownership and permissions
                 chown -R "{username}:{username}" "/home/{username}/2025"
                 chmod 755 "/home/{username}/2025"
                 chmod -R 755 "/home/{username}/2025"
-                chmod 775 "/home/{username}/2025/AUT/PX/Assignment1" "/home/{username}/2025/AUT/PX/Assignment2" \\
+                chmod 775 "/home/{username}/2025/AUT/PX/Assignment1" "/home/{username}/2025/AUT/PX/Assignment2" \
                           "/home/{username}/2025/SPR/PX/Assignment1" "/home/{username}/2025/SPR/PX/Assignment2"
-                """
-            ])
-            
-            if not success:
-                result["error"] = f"Failed to create chroot directories: {stderr}"
-                return result
-            
-            # Simple welcome message setup
-            success, stdout, stderr = self._exec_in_container([
-                "bash", "-c", f"""
-                # Create a simple welcome message
                 echo 'echo "Welcome to Automark, {username}! Your assignment folders are in ~/2025/"' >> "/home/{username}/.bashrc"
                 chown "{username}:{username}" "/home/{username}/.bashrc"
                 """
-            ])
-            
-            if not success:
-                result["error"] = f"Failed to set up user environment: {stderr}"
+            )
+            if code != 0:
+                result["error"] = f"Failed to set up user environment: {out}"
                 return result
-            
+
             result["success"] = True
             result["message"] = f"SSH user '{username}' created successfully"
-            logger.info(f"Created SSH user: {username}")
-            
-        except Exception as e:
-            result["error"] = f"Unexpected error: {str(e)}"
-            logger.error(f"Error creating SSH user {username}: {e}")
-        
-        return result
-    
-    def delete_user(self, username: str) -> Dict[str, Any]:
-        """
-        Delete an SSH user from the container
-        Returns dict with success status and details
-        """
-        result = {
-            "success": False,
-            "username": username,
-            "message": "",
-            "error": None
-        }
-        
-        # Check if user exists
-        if not self.user_exists(username):
-            result["message"] = f"User '{username}' does not exist"
-            result["success"] = True  # Not an error, user doesn't exist
+            logger.info(result["message"])
             return result
-        
+
+        except Exception as e:
+            logger.exception("Unexpected error creating SSH user")
+            result["error"] = f"Unexpected error: {e}"
+            return result
+
+    def delete_user(self, username: str) -> Dict[str, Any]:
+        result = {"success": False, "username": username, "message": "", "error": None}
         try:
-            # Delete user and home directory
-            success, stdout, stderr = self._exec_in_container([
-                "userdel", "-r", username
-            ])
-            
-            if not success:
-                result["error"] = f"Failed to delete user: {stderr}"
+            if not self.user_exists(username):
+                result["success"] = True
+                result["message"] = f"User '{username}' does not exist"
                 return result
-            
+
+            code, out = self._exec_sh(f"userdel -r {username}")
+            if code != 0:
+                result["error"] = f"Failed to delete user: {out}"
+                return result
+
             result["success"] = True
             result["message"] = f"SSH user '{username}' deleted successfully"
-            logger.info(f"Deleted SSH user: {username}")
-            
+            logger.info(result["message"])
+            return result
+
         except Exception as e:
-            result["error"] = f"Unexpected error: {str(e)}"
-            logger.error(f"Error deleting SSH user {username}: {e}")
-        
-        return result
-    
+            logger.exception("Unexpected error deleting SSH user")
+            result["error"] = f"Unexpected error: {e}"
+            return result
+
     def list_users(self) -> Dict[str, Any]:
-        """
-        List all non-system users in the SSH container
-        Returns dict with user list
-        """
-        result = {
-            "success": False,
-            "users": [],
-            "error": None
-        }
-        
+        result = {"success": False, "users": [], "error": None}
         try:
-            # Get users with UID >= 1000 (non-system users)
-            success, stdout, stderr = self._exec_in_container([
-                "bash", "-c", "awk -F: '$3 >= 1000 {print $1}' /etc/passwd"
-            ])
-            
-            if not success:
-                result["error"] = f"Failed to list users: {stderr}"
+            # list non-system users (uid >= 1000)
+            code, out = self._exec_sh(r"""awk -F: '$3 >= 1000 {print $1}' /etc/passwd""")
+            if code != 0:
+                result["error"] = f"Failed to list users: {out}"
                 return result
-            
-            users = [user.strip() for user in stdout.split('\n') if user.strip()]
+            users = [u.strip() for u in out.splitlines() if u.strip()]
             result["success"] = True
             result["users"] = users
-            
+            return result
         except Exception as e:
-            result["error"] = f"Unexpected error: {str(e)}"
-            logger.error(f"Error listing SSH users: {e}")
-        
-        return result
+            logger.exception("Unexpected error listing users")
+            result["error"] = f"Unexpected error: {e}"
+            return result
 
-# Helper function for FastAPI integration
+
+# helper for FastAPI register flow
 def create_ssh_user_for_registration(username: str, password: str) -> Dict[str, Any]:
-    """
-    Convenience function to create SSH user after web registration
-    """
     manager = SSHUserManager()
     return manager.create_user(username, password)
 
+
 if __name__ == "__main__":
-    # Test the functionality
+    # Optional quick manual test:
     import sys
-    
-    if len(sys.argv) != 4:
-        print("Usage: python ssh_user_manager.py <create|delete|list> <username> <password>")
+    if len(sys.argv) < 2:
+        print("Usage: python ssh_user_manager.py [create <u> <p> | delete <u> | list]")
         sys.exit(1)
-    
     action = sys.argv[1]
-    username = sys.argv[2] if len(sys.argv) > 2 else ""
-    password = sys.argv[3] if len(sys.argv) > 3 else ""
-    
-    manager = SSHUserManager()
-    
-    if action == "create":
-        result = manager.create_user(username, password)
-        print(f"Result: {result}")
-    elif action == "delete":
-        result = manager.delete_user(username)
-        print(f"Result: {result}")
+    mgr = SSHUserManager()
+    if action == "create" and len(sys.argv) == 4:
+        print(mgr.create_user(sys.argv[2], sys.argv[3]))
+    elif action == "delete" and len(sys.argv) == 3:
+        print(mgr.delete_user(sys.argv[2]))
     elif action == "list":
-        result = manager.list_users()
-        print(f"Result: {result}")
+        print(mgr.list_users())
     else:
-        print("Invalid action. Use 'create', 'delete', or 'list'")
+        print("Usage: python ssh_user_manager.py [create <u> <p> | delete <u> | list]")
         sys.exit(1)

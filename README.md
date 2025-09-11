@@ -183,3 +183,62 @@ make logs-api
 # Reset database if needed
 make db-reset
 ```
+## Automark: Dockerized stack & sandbox E2E
+
+### Prereqs
+- Docker Desktop (with Compose v2)
+- `curl` and `python3` on your host (for quick tests)
+
+### Services
+- **automark-api** (FastAPI) — persists `DB_PATH=/app/data/automark.db`, reads/writes `/app/uploads`, talks to Docker via `/var/run/docker.sock`.
+- **automark-ssh** (OpenSSH) — student UNIX accounts live here, `/home` is persisted via `automark-submissions` volume.
+- **automark-web** (nginx) — serves `Backend/server/static` on `:3000`, proxies `/api/*` to `automark-api:8000`.
+
+### First-time build
+```bash
+docker compose build automark-ssh automark-api automark-web
+docker build -t automark-sandbox:latest Backend/sandbox
+Run
+docker compose up -d automark-ssh automark-api automark-web
+curl -s http://127.0.0.1:8000/health | python3 -m json.tool
+# expect:
+# { "status": "ok", "service": "automark", "version": "0.2.0" }
+
+Quick smoke (manual)
+# Register + login a lecturer
+curl -s -X POST http://127.0.0.1:8000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"lectX","email":"lectX@ex.com","password":"Pass@123","role":"lecturer","first_name":"Lect","last_name":"X"}' | python3 -m json.tool
+
+LECT_TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"lectX","password":"Pass@123","remember_me":true}' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+
+# Create a folder
+curl -s -X POST http://127.0.0.1:8000/api/v1/folders \
+  -H "Authorization: Bearer $LECT_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"A1","description":"demo","status":"published","student_ids":[]}' | python3 -m json.tool
+
+One-command endpoint to endpoint
+Use the e2e.sh script below:
+
+./e2e.sh
+
+It will:
+Ensure images are built and services are healthy
+Register + login a lecturer
+Create a folder
+Register + login a student (and confirm the SSH user exists in automark-ssh)
+Submit to the folder (enqueue sandbox)
+Poll until the sandbox job finishes
+Show final status/score and a quick nginx check
+Troubleshooting
+Name conflict (container exists already):
+docker rm -f automark-api automark-ssh automark-web
+DB “locked” or missing columns (e.g., feedback, graded_at, score):
+bounce the API: docker compose restart automark-api
+If you migrated from older DBs, re-run with fresh volumes: docker compose down -v && docker compose up -d
+Sandbox didn’t run: make sure you built it:
+docker build -t automark-sandbox:latest Backend/sandbox
+SSH container not healthy: confirm config and that PasswordAuthentication yes is set; rebuild automark-ssh.

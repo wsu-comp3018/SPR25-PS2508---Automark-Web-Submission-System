@@ -8,18 +8,20 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 import logging
 
+import uuid
+
+
 import os
 from typing import List, Optional
 import json
 from contextlib import asynccontextmanager
-
+import threading, time, traceback
 
 # print("Current working directory:", os.getcwd())
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 # print("STATIC_DIR exists?", STATIC_DIR.exists(), BASE_DIR)
 # print("Files inside STATIC_DIR:", list(STATIC_DIR.rglob("*")))
-
 
 import sys
 sys.path.append('/app')
@@ -31,11 +33,22 @@ DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "automark.db"))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Try to import Docker SDK; if missing, we simulate job runs
+try:
+    import docker  # Python Docker SDK
+except Exception:
+    docker = None
+
 def init_db():
     try:
         print(f"🗃️ INIT_DB: Connecting to {DB_PATH}")
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
         c = conn.cursor()
+
+        # Pragmas to reduce lock errors and enforce FK
+        c.execute("PRAGMA journal_mode=WAL;")
+        c.execute("PRAGMA foreign_keys=ON;")
+        c.execute("PRAGMA busy_timeout=3000;")
 
         print("📝 INIT_DB: Creating users table...")
         c.execute("""
@@ -51,7 +64,7 @@ def init_db():
                 created_at TEXT NOT NULL,
                 last_login TEXT
             )
-    """)
+        """)
 
         print("📝 INIT_DB: Creating sessions table...")
         c.execute("""
@@ -80,7 +93,7 @@ def init_db():
                 FOREIGN KEY (lecturer_id) REFERENCES users(id)
             )
         """)
-        
+
         print("📝 INIT_DB: Creating folder_assignments table...")
         c.execute("""
             CREATE TABLE IF NOT EXISTS folder_assignments (
@@ -93,7 +106,7 @@ def init_db():
                 UNIQUE(folder_id, student_id)
             )
         """)
-        
+
         print("📝 INIT_DB: Creating submissions table...")
         c.execute("""
             CREATE TABLE IF NOT EXISTS submissions (
@@ -109,24 +122,50 @@ def init_db():
                 FOREIGN KEY (student_id) REFERENCES users(id)
             )
         """)
-        
+
+        # Helpful indexes
+        c.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_submissions_folder_student ON submissions(folder_id, student_id);")
+
+        print("🔧 INIT_DB: Applying schema self-migrations (no-ops if already applied)...")
+
+        def ensure_columns(table: str, specs: dict[str, str]) -> None:
+            cur = conn.cursor()
+            cur.execute(f"PRAGMA table_info({table});")
+            existing = {row[1] for row in cur.fetchall()}  # row[1] = column name
+            to_add = [(name, ddl) for name, ddl in specs.items() if name not in existing]
+            for name, ddl in to_add:
+                print(f"   ➕ {table}.{name}  (ALTER TABLE ... ADD COLUMN {ddl})")
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+            if to_add:
+                conn.commit()
+
+        # Make sure older DBs gain the newer columns
+        ensure_columns("submissions", {
+            "score": "INTEGER",
+            "feedback": "TEXT",
+            "status": "TEXT DEFAULT 'submitted'",
+            "graded_at": "TEXT",
+        })
+
         print("💾 INIT_DB: Committing changes...")
         conn.commit()
-        
-        # Verify tables were created
+
+        # Verify tables exist
         c.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [t[0] for t in c.fetchall()]
-        print(f"✅ INIT_DB: Created tables: {tables}")
-        
+        print(f"✅ INIT_DB: Tables present: {tables}")
+
         conn.close()
         print("🔐 INIT_DB: Database connection closed")
-        
+
     except Exception as e:
         print(f"❌ INIT_DB ERROR: {e}")
         import traceback
         traceback.print_exc()
         if 'conn' in locals():
             conn.close()
+
 
 def hash_password(pw: str) -> str:
     return hashlib.sha256(pw.encode("utf-8")).hexdigest()
@@ -211,6 +250,10 @@ class GradeSubmission(BaseModel):
     score: int
     feedback: Optional[str] = None
 
+class SubmissionReceive(BaseModel):
+    folder_id: int
+    content: Optional[str] = None  # optional payload; extend later for uploads
+
 @app.get("/")
 async def serverIndex():
     return FileResponse(STATIC_DIR / "login&register.html")
@@ -241,7 +284,8 @@ def ping():
 async def get_all_users_public():
     """Get all registered users (public access - read only)"""
     print(f"Connecting to database at: {DB_PATH}")
-    print(f"Database exists: {DB_PATH.exists()}")
+    from pathlib import Path
+    print(f"Database exists: {Path(DB_PATH).exists()}")
     
     conn = sqlite3.connect(str(DB_PATH))  # Convert Path to string
     conn.row_factory = sqlite3.Row
@@ -355,13 +399,146 @@ def login(body: LoginIn):
         }
     )
 
-@app.get("/api/v1/auth/session/{token}")
-def validate_session(token: str):
-    """Validate session token and return user info"""
+def _set_submission_status(submission_id: int, status: str, feedback: Optional[str] = None):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if feedback is not None:
+        c.execute(
+            "UPDATE submissions SET status = ?, feedback = ? WHERE id = ?",
+            (status, feedback, submission_id),
+        )
+    else:
+        c.execute(
+            "UPDATE submissions SET status = ? WHERE id = ?",
+            (status, submission_id),
+        )
+    conn.commit()
+    conn.close()
+
+
+def _set_submission_score(submission_id: int, score: int):
+    """Optional helper to persist numeric score + graded_at."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "UPDATE submissions SET score = ?, graded_at = ? WHERE id = ?",
+        (score, now_iso(), submission_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _run_submission_job(submission_id: int, env_extra: Optional[dict] = None):
+    """
+    Launch a sandbox container if Docker SDK + socket are available; otherwise simulate.
+    Status transitions: queued -> running -> completed/failed.
+    """
+    try:
+        _set_submission_status(submission_id, "running")
+
+        # Simulated path when Docker isn't available inside API
+        if docker is None or not os.path.exists("/var/run/docker.sock"):
+            time.sleep(1.0)
+            _set_submission_status(submission_id, "completed", feedback='{"simulated": true}')
+            return
+
+        client = docker.from_env()
+        env = {"SUBMISSION_ID": str(submission_id)}
+        if env_extra:
+            env.update(env_extra)
+
+        name = f"automark-sbx-{submission_id}-{uuid.uuid4().hex[:8]}"
+        container = None
+        try:
+            container = client.containers.run(
+                "automark-sandbox:latest",
+                command=["python", "/work/run.py"],  # ensure run.py actually runs
+                name=name,
+                environment=env,
+
+                # ---- isolation/limits ----
+                network_disabled=True,
+                read_only=True,
+                mem_limit="512m",
+                nano_cpus=1_000_000_000,   # 1 CPU
+                pids_limit=256,
+                security_opt=["no-new-privileges"],
+                cap_drop=["ALL"],
+                tmpfs={"/tmp": "", "/run": ""},
+                working_dir="/work",
+                user="runner",
+                # ---------------------------
+
+                detach=True,
+                auto_remove=False,          # fetch logs first, then remove
+            )
+
+            # Wait for exit, then read logs
+            exit_info = container.wait()   # blocks until finished
+            code = exit_info.get("StatusCode", 1) if isinstance(exit_info, dict) else int(exit_info)
+            try:
+                raw = container.logs(stdout=True, stderr=True, tail=2000)
+                logs = raw.decode("utf-8", "ignore") if isinstance(raw, (bytes, bytearray)) else str(raw)
+            except Exception as log_err:
+                logs = f"[no logs available: {log_err}]"
+
+        except Exception as e:
+            code = 1
+            logs = f"runner error: {e}"
+        finally:
+            if container is not None:
+                try:
+                    container.remove(force=True)  # remove AFTER grabbing logs
+                except Exception:
+                    pass
+
+        # --- Parse structured JSON from the runner if present ---
+        # Default based on exit code
+        status = "completed" if code == 0 else "failed"
+        fb = (logs or "")[-4000:]
+        score = None
+
+        import json
+        try:
+            last_line = fb.strip().splitlines()[-1]
+            obj = json.loads(last_line)
+            if isinstance(obj, dict):
+                # Prefer explicit ok/status if provided by the runner
+                if "ok" in obj:
+                    status = "completed" if bool(obj["ok"]) else "failed"
+                elif obj.get("status") in ("completed", "failed"):
+                    status = obj["status"]
+
+                if "score" in obj and obj["score"] is not None:
+                    score = int(obj["score"])
+
+                # Keep compact JSON as feedback for UI/logs
+                fb = json.dumps(obj, ensure_ascii=False)
+        except Exception:
+            # If parsing fails, fall back to exit code + raw logs
+            pass
+
+        _set_submission_status(submission_id, status, feedback=fb)
+        if score is not None:
+            _set_submission_score(submission_id, score)
+
+    except Exception as e:
+        _set_submission_status(
+            submission_id,
+            "failed",
+            feedback=f"runner error: {e}\n{traceback.format_exc()}",
+        )
+
+
+
+from fastapi import Header
+
+# --- Session validation (helper + route) ---
+def _validate_session(token: str):
+    """Core session validation logic used by both the route and Depends()"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
     try:
         now = datetime.datetime.utcnow().isoformat() + "Z"
         c.execute("""
@@ -371,56 +548,50 @@ def validate_session(token: str):
             JOIN users u ON u.id = s.user_id 
             WHERE s.token = ?
         """, (token,))
-        
         row = c.fetchone()
         if not row:
             return {"valid": False, "message": "Invalid session"}
-        
-        session_data = dict(row)
-        if (session_data["session_active"] != 1 or 
-            session_data["user_active"] != 1 or 
-            now > session_data["expires_at"]):
+
+        d = dict(row)
+        if (d["session_active"] != 1 or d["user_active"] != 1 or now > d["expires_at"]):
             return {"valid": False, "message": "Session expired or inactive"}
-        
+
         return {
             "valid": True,
             "user": {
-                "id": session_data["id"],
-                "username": session_data["username"],
-                "email": session_data["email"],
-                "role": session_data["role"],
-                "firstName": session_data["first_name"],
-                "lastName": session_data["last_name"]
-            }
+                "id": d["id"],
+                "username": d["username"],
+                "email": d["email"],
+                "role": d["role"],
+                "firstName": d["first_name"],
+                "lastName": d["last_name"],
+            },
         }
-    except sqlite3.Error as e:
-        return {"valid": False, "message": f"Database error: {str(e)}"}
     finally:
         conn.close()
-        
-from fastapi import Header
+
+@app.get("/api/v1/auth/session/{token}")
+def validate_session(token: str):
+    """Public route to validate a session (kept for the frontend / debugging)"""
+    return _validate_session(token)
+
 
 async def get_current_user(request: Request):
     """Get current user from session token"""
-    # Try to get token from Authorization header
     auth_header = request.headers.get("Authorization")
     token = None
-    
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header[7:]
     else:
-        # Try to get token from query parameter (for debugging)
         token = request.query_params.get("token")
-    
     if not token:
         raise HTTPException(status_code=401, detail="Authentication required")
-    
-    # Validate session token
-    result = validate_session(token)
+
+    result = _validate_session(token)  # <-- use helper, not the route fn
     if not result["valid"]:
         raise HTTPException(status_code=401, detail=result["message"])
-    
     return result["user"]
+
 
 # Folders endpoints
 @app.get("/api/v1/folders")
@@ -456,12 +627,10 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
     """Create a new assignment folder"""
     if current_user["role"] != "lecturer":
         raise HTTPException(status_code=403, detail="Only lecturers can create folders")
-    
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
     try:
-        # Create folder
         now = now_iso()
         c.execute("""
             INSERT INTO folders (name, description, due_date, max_points, status, created_at, updated_at, lecturer_id)
@@ -474,37 +643,42 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
             folder.status,
             now,
             now,
-            current_user["id"]
+            current_user["id"],
         ))
-        
         folder_id = c.lastrowid
-        
-        # Assign students to folder
-        for student_id in folder.student_ids:
-            c.execute("""
-                INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
-                VALUES (?, ?, ?)
-            """, (folder_id, student_id, now))
-        
+
+        # Assign students (if any)
+        assigned = 0
+        if folder.student_ids:
+            for student_id in folder.student_ids:
+                c.execute("""
+                    INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
+                    VALUES (?, ?, ?)
+                """, (folder_id, student_id, now))
+                assigned += 1
+
         conn.commit()
-        
-        # Return created folder
-        c.execute("""
-            SELECT f.*, COUNT(fa.student_id) as assigned_students_count
-            FROM folders f
-            LEFT JOIN folder_assignments fa ON f.id = fa.folder_id
-            WHERE f.id = ?
-            GROUP BY f.id
-        """, (folder_id,))
-        
-        new_folder = dict(c.fetchone())
-        return new_folder
-        
+
+        # Return the inserted object directly (avoid SELECT that was erroring)
+        return {
+            "id": folder_id,
+            "name": folder.name,
+            "description": folder.description,
+            "due_date": folder.due_date,
+            "max_points": folder.max_points,
+            "status": folder.status,
+            "created_at": now,
+            "updated_at": now,
+            "lecturer_id": current_user["id"],
+            "assigned_students_count": assigned,
+        }
+
     except sqlite3.Error as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         conn.close()
+
 
 @app.put("/api/v1/folders/{folder_id}")
 async def update_folder(folder_id: int, folder: FolderUpdate, current_user: dict = Depends(get_current_user)):
@@ -742,3 +916,51 @@ def delete_ssh_user_admin(username: str):
     except Exception as e:
         logger.error(f"Error deleting SSH user {username}: {e}")
         raise HTTPException(500, f"Failed to delete SSH user: {str(e)}")
+
+# Submissions: receive + poll
+@app.post("/api/v1/submissions/receive")
+def receive_submission(body: SubmissionReceive, current_user: dict = Depends(get_current_user)):
+    """Student submits to a folder -> enqueue sandbox run (in a background thread)."""
+    if current_user["role"] != "student":
+        raise HTTPException(403, "Only students can submit")
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        # ensure folder exists
+        c.execute("SELECT id FROM folders WHERE id = ?", (body.folder_id,))
+        if not c.fetchone():
+            raise HTTPException(404, "Folder not found")
+        now = now_iso()
+        c.execute("""
+            INSERT INTO submissions (folder_id, student_id, submitted_at, status, feedback)
+            VALUES (?, ?, ?, ?, ?)
+        """, (body.folder_id, current_user["id"], now, "queued", body.content or ""))
+        sid = c.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    threading.Thread(target=_run_submission_job, args=(sid,), daemon=True).start()
+    return {"submission_id": sid, "status": "queued"}
+
+@app.get("/api/v1/submissions/{submission_id}")
+def get_submission(submission_id: int, current_user: dict = Depends(get_current_user)):
+    """Poll submission status. Students see their own; lecturers see their students'."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        c.execute("SELECT * FROM submissions WHERE id = ?", (submission_id,))
+        row = c.fetchone()
+        if not row:
+            raise HTTPException(404, "Submission not found")
+        sub = dict(row)
+        if current_user["role"] == "student" and sub["student_id"] != current_user["id"]:
+            raise HTTPException(403, "Forbidden")
+        if current_user["role"] == "lecturer":
+            c.execute("SELECT lecturer_id FROM folders WHERE id = ?", (sub["folder_id"],))
+            owner = c.fetchone()
+            if not owner or owner[0] != current_user["id"]:
+                raise HTTPException(403, "Forbidden")
+        return sub
+    finally:
+        conn.close()
