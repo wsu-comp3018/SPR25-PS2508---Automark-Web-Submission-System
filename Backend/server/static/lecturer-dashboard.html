@@ -365,5 +365,16 @@
   <!-- Notification -->
   <div id="notification" class="notification"></div>
 </body>
-<script type="module" src="/js/pages/lecturer-dashboard.js"></script>
+  <script type="module" src="/js/pages/lecturer-dashboard.js"></script>
+  <script>
+  document.addEventListener('DOMContentLoaded', function() {
+    var logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+      logoutBtn.addEventListener('click', function() {
+        localStorage.removeItem('automark_user');
+        window.location.href = 'login&register.html';
+      });
+    }
+  });
+  </script>
 </html>

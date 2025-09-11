@@ -310,7 +310,17 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Load initial data
   loadAllData();
+
+  // Wire up logout button
+  $('logoutBtn').addEventListener('click', () => {
+    logout();
+  });
 });
+
+function logout() {
+  localStorage.removeItem(SESSION_KEY);
+  window.location.href = 'login&register.html';
+}
 
 // Export functions for HTML onclick handlers
 window.deleteSelectedUsers = () => showNotification('Please use the individual folder actions', 'info');
