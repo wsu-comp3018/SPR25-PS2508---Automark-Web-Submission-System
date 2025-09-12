@@ -279,6 +279,7 @@ function render() {
           • ${due} • ${points} • Materials: ${mat}
         </div>
         ${node.description ? `<div class="small" style="margin-top:4px">${node.description}</div>` : ''}
+
  
         ${node.fileIds?.length ? `<div class="small" style="margin-top:6px">` + node.fileIds.map(fid => `<a href="#" class="link" data-download-mat="${fid}" title="Download material">${(getFile(fid) || {}).name || 'file'}</a>`).join(' • ') + `</div>` : ''}
  
@@ -354,11 +355,13 @@ function renderInlineSubmission(node) {
       <button class="${existing ? 'warning' : 'success'}" data-submit="${node.id}">${existing ? 'Update Submission' : 'Submit'}</button>
       ${existing ? `<button class="ghost" data-download-sub="${existing.id}">My Files</button>
                   <button class="ghost danger" data-delete-sub="${existing.id}">Delete</button>` : ''}
+
      
       <div class="file-list" data-file-list="${node.id}" style="width: 100%; margin-top: 8px;">
         <div class="small" style="color: #999; font-style: italic;">No files selected</div>
       </div>
      
+
       <span class="hint">${existing ? `Submitted: ${fmtDate(existing.submittedAt)}` : 'No submission yet'}</span>
       ${late ? `<span class="status late" title="Past due">LATE</span>` : ''}
       ${gradeLine}
@@ -376,11 +379,13 @@ async function handleSubmit(folderId) {
   if (!folder) {
     showNote('Assignment not found', 'error');
     return;
+
   }
   if (!isActive(folder) || !isAssignedToMe(folder)) {
     showNote('You are not allowed to submit to this assignment.', 'error');
     return;
   }
+
   if (folder.subfolders && folder.subfolders.length) {
     showNote('You can only submit to the final child folder.', 'error');
     return;
@@ -533,3 +538,4 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
 });
+
