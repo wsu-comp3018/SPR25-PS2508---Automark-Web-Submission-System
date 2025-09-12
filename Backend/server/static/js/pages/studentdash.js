@@ -228,7 +228,7 @@ function render() {
   const main = $('mainList');
   if (!main) return;
   main.innerHTML = '';
-  
+
   const side = $('sidebarList');
   if (side) side.innerHTML = '';
 
@@ -280,8 +280,9 @@ function render() {
         </div>
         ${node.description ? `<div class="small" style="margin-top:4px">${node.description}</div>` : ''}
 
+ 
         ${node.fileIds?.length ? `<div class="small" style="margin-top:6px">` + node.fileIds.map(fid => `<a href="#" class="link" data-download-mat="${fid}" title="Download material">${(getFile(fid) || {}).name || 'file'}</a>`).join(' • ') + `</div>` : ''}
-
+ 
         ${node.__meAssigned ? (hasChildren ? '<div class="small" style="margin-top:6px;color:#999">Submissions are only allowed in the <strong>last child folder</strong>. Open a child folder to submit.</div>' : renderInlineSubmission(node)) : '<div class="small" style="margin-top:6px;color:#999">Visible for context (not assigned to you).</div>'}
       </div>
       <div class="actions">
@@ -354,11 +355,13 @@ function renderInlineSubmission(node) {
       <button class="${existing ? 'warning' : 'success'}" data-submit="${node.id}">${existing ? 'Update Submission' : 'Submit'}</button>
       ${existing ? `<button class="ghost" data-download-sub="${existing.id}">My Files</button>
                   <button class="ghost danger" data-delete-sub="${existing.id}">Delete</button>` : ''}
-      
+
+     
       <div class="file-list" data-file-list="${node.id}" style="width: 100%; margin-top: 8px;">
         <div class="small" style="color: #999; font-style: italic;">No files selected</div>
       </div>
-      
+     
+
       <span class="hint">${existing ? `Submitted: ${fmtDate(existing.submittedAt)}` : 'No submission yet'}</span>
       ${late ? `<span class="status late" title="Past due">LATE</span>` : ''}
       ${gradeLine}
@@ -376,11 +379,13 @@ async function handleSubmit(folderId) {
   if (!folder) {
     showNote('Assignment not found', 'error');
     return;
+
   }
   if (!isActive(folder) || !isAssignedToMe(folder)) {
     showNote('You are not allowed to submit to this assignment.', 'error');
     return;
   }
+
   if (folder.subfolders && folder.subfolders.length) {
     showNote('You can only submit to the final child folder.', 'error');
     return;
@@ -531,9 +536,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // diagnostics
-  const runDiagBtn = $('runDiagBtn');
-  if (runDiagBtn) {
-    runDiagBtn.addEventListener('click', runDiagnostics);
-  }
+
 });
+
