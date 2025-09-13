@@ -9,7 +9,7 @@ from pathlib import Path
 import logging
 
 import os
-from typing import List, Optional
+from typing import List, Optional, Dict
 import json
 from contextlib import asynccontextmanager
 
@@ -109,6 +109,114 @@ def init_db():
                 FOREIGN KEY (student_id) REFERENCES users(id)
             )
         """)
+
+        print("📝 INIT_DB: Creating subjects table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS subjects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                lecturer_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (lecturer_id) REFERENCES users(id)
+            )
+        """)
+        
+        print("👨‍🏫 INIT_DB: Creating hardcoded lecturers...")
+        
+        # Hardcoded lecturer information
+        lecturers = [
+            {
+                "username": "lecturer_db",
+                "email": "db.lecturer@automark.com",
+                "password": "dbpassword123",
+                "first_name": "John",
+                "last_name": "Smith",
+                "subjects": [
+                    {"code": "Comp0067", "name": "Database and Design"}
+                ]
+            },
+            {
+                "username": "lecturer_prog",
+                "email": "prog.lecturer@automark.com", 
+                "password": "progpassword123",
+                "first_name": "Sarah",
+                "last_name": "Johnson",
+                "subjects": [
+                    {"code": "Comp0420", "name": "Programming Techniques"}
+                ]
+            },
+            {
+                "username": "lecturer_oop",
+                "email": "oop.lecturer@automark.com",
+                "password": "ooppassword123", 
+                "first_name": "Robert",
+                "last_name": "Williams",
+                "subjects": [
+                    {"code": "Infs8586", "name": "Object Oriented Programming"},
+                    {"code": "Comp5055", "name": "Software Engineering"}
+                ]
+            }
+        ]
+
+        now = now_iso()
+        
+        for lecturer in lecturers:
+            try:
+                # Check if lecturer already exists
+                c.execute("SELECT id FROM users WHERE username = ?", (lecturer["username"],))
+                existing_user = c.fetchone()
+                
+                if not existing_user:
+                    # Create lecturer user
+                    c.execute("""
+                        INSERT INTO users (username, email, password_hash, role, first_name, last_name, created_at)
+                        VALUES (?, ?, ?, 'lecturer', ?, ?, ?)
+                    """, (
+                        lecturer["username"],
+                        lecturer["email"],
+                        hash_password(lecturer["password"]),
+                        lecturer["first_name"],
+                        lecturer["last_name"],
+                        now
+                    ))
+                    lecturer_id = c.lastrowid
+                    print(f"✅ Created lecturer: {lecturer['username']} (ID: {lecturer_id})")
+                    
+                    # Create SSH user for lecturer
+                    try:
+                        ssh_result = create_ssh_user_for_registration(lecturer["username"], lecturer["password"])
+                        if ssh_result["success"]:
+                            print(f"✅ Created SSH user for {lecturer['username']}")
+                        else:
+                            print(f"⚠️  SSH user creation failed for {lecturer['username']}: {ssh_result.get('error')}")
+                    except Exception as e:
+                        print(f"⚠️  SSH user creation error for {lecturer['username']}: {e}")
+                    
+                    # Assign subjects to lecturer
+                    for subject in lecturer["subjects"]:
+                        try:
+                            c.execute("""
+                                INSERT OR IGNORE INTO subjects (code, name, lecturer_id, created_at)
+                                VALUES (?, ?, ?, ?)
+                            """, (
+                                subject["code"],
+                                subject["name"],
+                                lecturer_id,
+                                now
+                            ))
+                            print(f"   ✅ Assigned subject: {subject['code']} - {subject['name']}")
+                        except sqlite3.Error as e:
+                            print(f"   ❌ Failed to assign subject {subject['code']}: {e}")
+                
+                else:
+                    print(f"⚠️  Lecturer already exists: {lecturer['username']}")
+                    lecturer_id = existing_user[0]
+                    
+            except sqlite3.Error as e:
+                print(f"❌ Failed to create lecturer {lecturer['username']}: {e}")
+                continue
+
         
         print("💾 INIT_DB: Committing changes...")
         conn.commit()
@@ -210,6 +318,12 @@ class FolderUpdate(BaseModel):
 class GradeSubmission(BaseModel):
     score: int
     feedback: Optional[str] = None
+
+
+class SubjectCreate(BaseModel):
+    code: str
+    name: str
+    lecturer_id: int
 
 @app.get("/")
 async def serverIndex():
@@ -742,3 +856,76 @@ def delete_ssh_user_admin(username: str):
     except Exception as e:
         logger.error(f"Error deleting SSH user {username}: {e}")
         raise HTTPException(500, f"Failed to delete SSH user: {str(e)}")
+
+
+# API endpoints for subjects
+@app.get("/api/v1/subjects")
+async def get_all_subjects(current_user: dict = Depends(get_current_user)):
+    """Get all subjects"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        c.execute("""
+            SELECT s.*, u.first_name, u.last_name 
+            FROM subjects s
+            JOIN users u ON s.lecturer_id = u.id
+            ORDER BY s.code
+        """)
+        
+        subjects = c.fetchall()
+        return [dict(subject) for subject in subjects]
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+@app.get("/api/v1/lecturers/{lecturer_id}/subjects")
+async def get_lecturer_subjects(lecturer_id: int, current_user: dict = Depends(get_current_user)):
+    """Get subjects assigned to a specific lecturer"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        c.execute("""
+            SELECT s.* 
+            FROM subjects s
+            WHERE s.lecturer_id = ?
+            ORDER BY s.code
+        """, (lecturer_id,))
+        
+        subjects = c.fetchall()
+        return [dict(subject) for subject in subjects]
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+@app.get("/api/v1/subjects/{subject_code}")
+async def get_subject(subject_code: str, current_user: dict = Depends(get_current_user)):
+    """Get specific subject by code"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        c.execute("""
+            SELECT s.*, u.first_name, u.last_name 
+            FROM subjects s
+            JOIN users u ON s.lecturer_id = u.id
+            WHERE s.code = ?
+        """, (subject_code,))
+        
+        subject = c.fetchone()
+        if not subject:
+            raise HTTPException(status_code=404, detail="Subject not found")
+        
+        return dict(subject)
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    
+    finally:
+        conn.close()
+

@@ -146,6 +146,7 @@ function findById(list, id) {
       if (x) return x;
     }
   }
+
   return null;
 }
 
@@ -224,13 +225,13 @@ function addFiles(folderId, newFiles) {
 function render() {
   const tree = computeVisibleTree();
   const query = ($('searchBox')?.value || '').toLowerCase();
-
   const main = $('mainList');
   if (!main) return;
   main.innerHTML = '';
 
   const side = $('sidebarList');
   if (side) side.innerHTML = '';
+
 
   if (tree.length === 0) {
     main.innerHTML = '<div class="small">No active assignments yet. If you were recently enrolled, your lecturer may still be preparing them.</div>';
@@ -257,6 +258,7 @@ function render() {
         submittedCount++;
         if (sub.graded) graded++;
       }
+
     }
 
     const wrapper = document.createElement('div');
@@ -279,7 +281,6 @@ function render() {
           • ${due} • ${points} • Materials: ${mat}
         </div>
         ${node.description ? `<div class="small" style="margin-top:4px">${node.description}</div>` : ''}
-
  
         ${node.fileIds?.length ? `<div class="small" style="margin-top:6px">` + node.fileIds.map(fid => `<a href="#" class="link" data-download-mat="${fid}" title="Download material">${(getFile(fid) || {}).name || 'file'}</a>`).join(' • ') + `</div>` : ''}
  
@@ -300,7 +301,7 @@ function render() {
     }
   }
 
-  function renderSidebar(node, level = 0, parentPath = '') {
+function renderSidebar(node, level = 0, parentPath = '') {
     const path = parentPath ? parentPath + ' / ' + node.name : node.name;
     const row = document.createElement('div');
     row.className = 'assignment';
@@ -355,13 +356,11 @@ function renderInlineSubmission(node) {
       <button class="${existing ? 'warning' : 'success'}" data-submit="${node.id}">${existing ? 'Update Submission' : 'Submit'}</button>
       ${existing ? `<button class="ghost" data-download-sub="${existing.id}">My Files</button>
                   <button class="ghost danger" data-delete-sub="${existing.id}">Delete</button>` : ''}
-
      
       <div class="file-list" data-file-list="${node.id}" style="width: 100%; margin-top: 8px;">
         <div class="small" style="color: #999; font-style: italic;">No files selected</div>
       </div>
      
-
       <span class="hint">${existing ? `Submitted: ${fmtDate(existing.submittedAt)}` : 'No submission yet'}</span>
       ${late ? `<span class="status late" title="Past due">LATE</span>` : ''}
       ${gradeLine}
@@ -389,13 +388,16 @@ async function handleSubmit(folderId) {
   if (folder.subfolders && folder.subfolders.length) {
     showNote('You can only submit to the final child folder.', 'error');
     return;
+
   }
 
   // Check for selected files
   const selectedFilesForFolder = selectedFiles.get(folderId) || [];
   if (selectedFilesForFolder.length === 0) {
+
     showNote('Please choose at least one file to upload', 'warning');
     return;
+
   }
 
   const fileIds = await saveFiles(selectedFilesForFolder);
@@ -433,6 +435,7 @@ async function handleSubmit(folderId) {
 
 function downloadMySubmission(subId) {
   const sub = getSubs().find(s => s.id === subId && s.studentId === String(currentUser.id));
+
   if (!sub) {
     showNote('Submission not found', 'error');
     return;
@@ -441,6 +444,7 @@ function downloadMySubmission(subId) {
     showNote('No files in this submission', 'warning');
     return;
   }
+
   // Download each file individually
   sub.fileIds.forEach(fid => downloadFile(fid));
   showNote(`Downloading ${sub.fileIds.length} file(s)...`);
@@ -449,6 +453,7 @@ function downloadMySubmission(subId) {
 function deleteMySubmission(subId) {
   const subs = getSubs();
   const idx = subs.findIndex(s => s.id === subId && s.studentId === String(currentUser.id));
+
   if (idx === -1) {
     showNote('Submission not found', 'error');
     return;
@@ -458,6 +463,7 @@ function deleteMySubmission(subId) {
   saveSubs(subs);
   showNote('Submission deleted');
   render();
+
 }
 
 /********************
@@ -465,6 +471,7 @@ function deleteMySubmission(subId) {
  ********************/
 document.addEventListener('DOMContentLoaded', () => {
   render();
+
 
   // searching
   const searchBox = $('searchBox');
@@ -488,6 +495,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // toggle tree
     const tid = t.getAttribute('data-toggle');
+
     if (tid) {
       expanded.has(tid) ? expanded.delete(tid) : expanded.add(tid);
       render();
@@ -499,6 +507,7 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault();
       downloadFile(mat);
     }
+
 
     // submit/update submission
     const subFor = t.getAttribute('data-submit');
@@ -520,6 +529,7 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault();
       deleteMySubmission(del);
     }
+
   });
 
   // listen to storage changes (another tab/lecturer updates)
@@ -528,6 +538,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // logout
+
   const logoutBtn = $('logoutBtn');
   if (logoutBtn) {
     logoutBtn.addEventListener('click', () => {
@@ -535,7 +546,6 @@ document.addEventListener('DOMContentLoaded', () => {
       window.location.href = 'login&register.html';
     });
   }
-
 
 });
 
