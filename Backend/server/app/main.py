@@ -923,5 +923,6 @@ async def get_subject(subject_code: str, current_user: dict = Depends(get_curren
         return dict(subject)
     except sqlite3.Error as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    
     finally:
         conn.close()
