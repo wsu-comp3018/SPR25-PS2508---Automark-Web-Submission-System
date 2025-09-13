@@ -6,9 +6,12 @@ import hashlib, sqlite3, uuid, datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
+import logging
+
 import os
-from typing import List, Optional
+from typing import List, Optional, Dict
 import json
+from contextlib import asynccontextmanager
 
 
 # print("Current working directory:", os.getcwd())
@@ -18,83 +21,220 @@ STATIC_DIR = BASE_DIR / "static"
 # print("Files inside STATIC_DIR:", list(STATIC_DIR.rglob("*")))
 
 
-DB_PATH = BASE_DIR / "automark.db"
+import sys
+sys.path.append('/app')
+from ssh_user_manager import create_ssh_user_for_registration
+
+DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "automark.db"))
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    try:
+        print(f"🗃️ INIT_DB: Connecting to {DB_PATH}")
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
 
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            role TEXT CHECK(role IN ('student','lecturer')) NOT NULL,
-            first_name TEXT NOT NULL,
-            last_name TEXT NOT NULL,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL,
-            last_login TEXT
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            token TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )
+        print("📝 INIT_DB: Creating users table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT CHECK(role IN ('student','lecturer')) NOT NULL,
+                first_name TEXT NOT NULL,
+                last_name TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                last_login TEXT
+            )
     """)
 
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS folders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            description TEXT,
-            due_date TEXT,
-            max_points INTEGER DEFAULT 100,
-            status TEXT DEFAULT 'draft',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            lecturer_id INTEGER NOT NULL,
-            FOREIGN KEY (lecturer_id) REFERENCES users(id)
-        )
-    """)
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS folder_assignments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            folder_id INTEGER NOT NULL,
-            student_id INTEGER NOT NULL,
-            assigned_at TEXT NOT NULL,
-            FOREIGN KEY (folder_id) REFERENCES folders(id),
-            FOREIGN KEY (student_id) REFERENCES users(id),
-            UNIQUE(folder_id, student_id)
-        )
-    """)
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS submissions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            folder_id INTEGER NOT NULL,
-            student_id INTEGER NOT NULL,
-            submitted_at TEXT NOT NULL,
-            score INTEGER,
-            feedback TEXT,
-            status TEXT DEFAULT 'submitted',
-            graded_at TEXT,
-            FOREIGN KEY (folder_id) REFERENCES folders(id),
-            FOREIGN KEY (student_id) REFERENCES users(id)
-        )
-    """)
-    
-    
-    conn.commit()
-    conn.close()
+        print("📝 INIT_DB: Creating sessions table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+
+        print("📝 INIT_DB: Creating folders table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT,
+                due_date TEXT,
+                max_points INTEGER DEFAULT 100,
+                status TEXT DEFAULT 'draft',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                lecturer_id INTEGER NOT NULL,
+                FOREIGN KEY (lecturer_id) REFERENCES users(id)
+            )
+        """)
+        
+        print("📝 INIT_DB: Creating folder_assignments table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS folder_assignments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_id INTEGER NOT NULL,
+                student_id INTEGER NOT NULL,
+                assigned_at TEXT NOT NULL,
+                FOREIGN KEY (folder_id) REFERENCES folders(id),
+                FOREIGN KEY (student_id) REFERENCES users(id),
+                UNIQUE(folder_id, student_id)
+            )
+        """)
+        
+        print("📝 INIT_DB: Creating submissions table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS submissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_id INTEGER NOT NULL,
+                student_id INTEGER NOT NULL,
+                submitted_at TEXT NOT NULL,
+                score INTEGER,
+                feedback TEXT,
+                status TEXT DEFAULT 'submitted',
+                graded_at TEXT,
+                FOREIGN KEY (folder_id) REFERENCES folders(id),
+                FOREIGN KEY (student_id) REFERENCES users(id)
+            )
+        """)
+
+        print("📝 INIT_DB: Creating subjects table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS subjects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                lecturer_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (lecturer_id) REFERENCES users(id)
+            )
+        """)
+        
+        print("👨‍🏫 INIT_DB: Creating hardcoded lecturers...")
+        
+        # Hardcoded lecturer information
+        lecturers = [
+            {
+                "username": "lecturer_db",
+                "email": "db.lecturer@automark.com",
+                "password": "dbpassword123",
+                "first_name": "John",
+                "last_name": "Smith",
+                "subjects": [
+                    {"code": "Comp0067", "name": "Database and Design"}
+                ]
+            },
+            {
+                "username": "lecturer_prog",
+                "email": "prog.lecturer@automark.com", 
+                "password": "progpassword123",
+                "first_name": "Sarah",
+                "last_name": "Johnson",
+                "subjects": [
+                    {"code": "Comp0420", "name": "Programming Techniques"}
+                ]
+            },
+            {
+                "username": "lecturer_oop",
+                "email": "oop.lecturer@automark.com",
+                "password": "ooppassword123", 
+                "first_name": "Robert",
+                "last_name": "Williams",
+                "subjects": [
+                    {"code": "Infs8586", "name": "Object Oriented Programming"},
+                    {"code": "Comp5055", "name": "Software Engineering"}
+                ]
+            }
+        ]
+
+        now = now_iso()
+        
+        for lecturer in lecturers:
+            try:
+                # Check if lecturer already exists
+                c.execute("SELECT id FROM users WHERE username = ?", (lecturer["username"],))
+                existing_user = c.fetchone()
+                
+                if not existing_user:
+                    # Create lecturer user
+                    c.execute("""
+                        INSERT INTO users (username, email, password_hash, role, first_name, last_name, created_at)
+                        VALUES (?, ?, ?, 'lecturer', ?, ?, ?)
+                    """, (
+                        lecturer["username"],
+                        lecturer["email"],
+                        hash_password(lecturer["password"]),
+                        lecturer["first_name"],
+                        lecturer["last_name"],
+                        now
+                    ))
+                    lecturer_id = c.lastrowid
+                    print(f"✅ Created lecturer: {lecturer['username']} (ID: {lecturer_id})")
+                    
+                    # Create SSH user for lecturer
+                    try:
+                        ssh_result = create_ssh_user_for_registration(lecturer["username"], lecturer["password"])
+                        if ssh_result["success"]:
+                            print(f"✅ Created SSH user for {lecturer['username']}")
+                        else:
+                            print(f"⚠️  SSH user creation failed for {lecturer['username']}: {ssh_result.get('error')}")
+                    except Exception as e:
+                        print(f"⚠️  SSH user creation error for {lecturer['username']}: {e}")
+                    
+                    # Assign subjects to lecturer
+                    for subject in lecturer["subjects"]:
+                        try:
+                            c.execute("""
+                                INSERT OR IGNORE INTO subjects (code, name, lecturer_id, created_at)
+                                VALUES (?, ?, ?, ?)
+                            """, (
+                                subject["code"],
+                                subject["name"],
+                                lecturer_id,
+                                now
+                            ))
+                            print(f"   ✅ Assigned subject: {subject['code']} - {subject['name']}")
+                        except sqlite3.Error as e:
+                            print(f"   ❌ Failed to assign subject {subject['code']}: {e}")
+                
+                else:
+                    print(f"⚠️  Lecturer already exists: {lecturer['username']}")
+                    lecturer_id = existing_user[0]
+                    
+            except sqlite3.Error as e:
+                print(f"❌ Failed to create lecturer {lecturer['username']}: {e}")
+                continue
+
+        
+        print("💾 INIT_DB: Committing changes...")
+        conn.commit()
+        
+        # Verify tables were created
+        c.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [t[0] for t in c.fetchall()]
+        print(f"✅ INIT_DB: Created tables: {tables}")
+        
+        conn.close()
+        print("🔐 INIT_DB: Database connection closed")
+        
+    except Exception as e:
+        print(f"❌ INIT_DB ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        if 'conn' in locals():
+            conn.close()
 
 def hash_password(pw: str) -> str:
     return hashlib.sha256(pw.encode("utf-8")).hexdigest()
@@ -102,7 +242,23 @@ def hash_password(pw: str) -> str:
 def now_iso():
     return datetime.datetime.utcnow().isoformat() + "Z"
 
-app = FastAPI(title="Automark API", version="0.2.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("🚀 LIFESPAN: Starting up application...")
+    print(f"🗃️ LIFESPAN: Database path: {DB_PATH}")
+    init_db()
+    print("✅ LIFESPAN: Database initialized")
+    yield
+    # Shutdown (nothing needed for now)
+    print("🛑 LIFESPAN: Shutting down application...")
+
+app = FastAPI(title="Automark API", version="0.2.0", lifespan=lifespan)
+
+# Force database initialization if lifespan isn't working
+import atexit
+init_db()
+atexit.register(lambda: None)  # Cleanup on exit
 
 # Mount static folder
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -163,9 +319,10 @@ class GradeSubmission(BaseModel):
     score: int
     feedback: Optional[str] = None
 
-@app.on_event("startup")
-def _startup():
-    init_db()
+class SubjectCreate(BaseModel):
+    code: str
+    name: str
+    lecturer_id: int
 
 @app.get("/")
 async def serverIndex():
@@ -245,6 +402,20 @@ def register(body: RegisterIn):
     c.execute("SELECT id, username, email, role, first_name, last_name FROM users WHERE id = ?", (user_id,))
     row = c.fetchone()
     conn.close()
+    
+    # Create SSH user automatically
+    try:
+        ssh_result = create_ssh_user_for_registration(body.username.strip(), body.password)
+        if ssh_result["success"]:
+            logger.info(f"SSH user created for {body.username}: {ssh_result['message']}")
+        else:
+            logger.warning(f"SSH user creation failed for {body.username}: {ssh_result.get('error', 'Unknown error')}")
+            # Note: We don't fail the registration if SSH creation fails
+            # The user can still use the web interface
+    except Exception as e:
+        logger.error(f"Error creating SSH user for {body.username}: {e}")
+        # Continue with registration even if SSH creation fails
+    
     return RegisterOut(
         id=row[0], username=row[1], email=row[2], role=row[3],
         first_name=row[4], last_name=row[5]
@@ -642,6 +813,115 @@ async def grade_submission(submission_id: int, grade: GradeSubmission, current_u
         
     except sqlite3.Error as e:
         conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+# SSH User Management Endpoints (Admin)
+@app.get("/api/v1/admin/ssh-users")
+def list_ssh_users():
+    """List all SSH users in the container"""
+    try:
+        from ssh_user_manager import SSHUserManager
+        manager = SSHUserManager()
+        result = manager.list_users()
+        return result
+    except Exception as e:
+        logger.error(f"Error listing SSH users: {e}")
+        raise HTTPException(500, f"Failed to list SSH users: {str(e)}")
+
+@app.post("/api/v1/admin/ssh-users/{username}")
+def create_ssh_user_admin(username: str, password: str):
+    """Manually create SSH user (admin endpoint)"""
+    try:
+        result = create_ssh_user_for_registration(username, password)
+        if not result["success"]:
+            raise HTTPException(400, result.get("error", "Failed to create SSH user"))
+        return result
+    except Exception as e:
+        logger.error(f"Error creating SSH user {username}: {e}")
+        raise HTTPException(500, f"Failed to create SSH user: {str(e)}")
+
+@app.delete("/api/v1/admin/ssh-users/{username}")
+def delete_ssh_user_admin(username: str):
+    """Delete SSH user (admin endpoint)"""
+    try:
+        from ssh_user_manager import SSHUserManager
+        manager = SSHUserManager()
+        result = manager.delete_user(username)
+        if not result["success"]:
+            raise HTTPException(400, result.get("error", "Failed to delete SSH user"))
+        return result
+    except Exception as e:
+        logger.error(f"Error deleting SSH user {username}: {e}")
+        raise HTTPException(500, f"Failed to delete SSH user: {str(e)}")
+
+# API endpoints for subjects
+@app.get("/api/v1/subjects")
+async def get_all_subjects(current_user: dict = Depends(get_current_user)):
+    """Get all subjects"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        c.execute("""
+            SELECT s.*, u.first_name, u.last_name 
+            FROM subjects s
+            JOIN users u ON s.lecturer_id = u.id
+            ORDER BY s.code
+        """)
+        
+        subjects = c.fetchall()
+        return [dict(subject) for subject in subjects]
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+@app.get("/api/v1/lecturers/{lecturer_id}/subjects")
+async def get_lecturer_subjects(lecturer_id: int, current_user: dict = Depends(get_current_user)):
+    """Get subjects assigned to a specific lecturer"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        c.execute("""
+            SELECT s.* 
+            FROM subjects s
+            WHERE s.lecturer_id = ?
+            ORDER BY s.code
+        """, (lecturer_id,))
+        
+        subjects = c.fetchall()
+        return [dict(subject) for subject in subjects]
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+@app.get("/api/v1/subjects/{subject_code}")
+async def get_subject(subject_code: str, current_user: dict = Depends(get_current_user)):
+    """Get specific subject by code"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        c.execute("""
+            SELECT s.*, u.first_name, u.last_name 
+            FROM subjects s
+            JOIN users u ON s.lecturer_id = u.id
+            WHERE s.code = ?
+        """, (subject_code,))
+        
+        subject = c.fetchone()
+        if not subject:
+            raise HTTPException(status_code=404, detail="Subject not found")
+        
+        return dict(subject)
+    except sqlite3.Error as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         conn.close()
