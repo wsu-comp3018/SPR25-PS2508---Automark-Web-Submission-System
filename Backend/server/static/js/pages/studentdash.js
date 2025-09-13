@@ -4,36 +4,67 @@
 const STORAGE_FOLDERS = 'automark_folders';
 const STORAGE_SUBS = 'automark_submissions';
 const USERS_KEY = 'automark_users';
-const SESSION_KEY = 'automark_user';
+const SESSION_KEY = 'automark-session';
 const FILES_KEY = 'automark_files';
 
 /********************
  * Utilities         *
  ********************/
 const $ = (id) => document.getElementById(id);
-const loadJSON = (key, fallback = []) => { try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); } catch (e) { return fallback; } };
+const loadJSON = (key, fallback = []) => {
+  try {
+    return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
+  } catch (e) {
+    return fallback;
+  }
+};
 const saveJSON = (key, obj) => localStorage.setItem(key, JSON.stringify(obj));
 const uid = (p = 'id') => p + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 
-function fmtDate(iso) { try { return new Date(iso).toLocaleString(); } catch { return '—'; } }
-function fmtDateShort(iso) { try { return new Date(iso).toLocaleDateString(); } catch { return '—'; } }
-function daysUntil(iso) { if (!iso) return Infinity; const d = (new Date(iso) - new Date()) / (1000 * 60 * 60 * 24); return Math.ceil(d); }
+function fmtDate(iso) {
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return '—';
+  }
+}
+function fmtDateShort(iso) {
+  try {
+    return new Date(iso).toLocaleDateString();
+  } catch {
+    return '—';
+  }
+}
+function daysUntil(iso) {
+  if (!iso) return Infinity;
+  const d = (new Date(iso) - new Date()) / (1000 * 60 * 60 * 24);
+  return Math.ceil(d);
+}
 
 function showNote(msg, type = 'success') {
   const n = $('notification');
-  n.textContent = msg; n.className = `notification ${type} show`;
+  if (!n) return;
+  n.textContent = msg;
+  n.className = `notification ${type} show`;
   setTimeout(() => n.classList.remove('show'), 3000);
 }
 
 /********************
  * Session Guard     *
  ********************/
-const currentUser = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+const sessionData = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+const currentUser = sessionData?.user || null;
+
+// Check if user is logged in and is a student
 if (!currentUser || currentUser.role !== 'student') {
   alert('Not signed in as student. Redirecting to login.');
-  window.location.href = 'Login and Registration.html';
+  window.location.href = 'login&register.html';
 }
-$('greeting').textContent = `Hi, ${currentUser.firstName || currentUser.username}`;
+
+// Set greeting if element exists
+if ($('greeting')) {
+  $('greeting').textContent = `Hi, ${currentUser.firstName || currentUser.username || 'Student'}`;
+}
 
 /********************
  * File Helpers      *
@@ -100,11 +131,22 @@ const getFolders = () => loadJSON(STORAGE_FOLDERS, []);
 const getSubs = () => loadJSON(STORAGE_SUBS, []);
 const saveSubs = (s) => saveJSON(STORAGE_SUBS, s);
 
-function isAssignedToMe(folder) { return Array.isArray(folder.assignedTo) && folder.assignedTo.map(String).includes(String(currentUser.id)); }
-function isActive(folder) { return (folder.status || 'draft') === 'active'; }
+function isAssignedToMe(folder) {
+  return Array.isArray(folder.assignedTo) && folder.assignedTo.map(String).includes(String(currentUser.id));
+}
+function isActive(folder) {
+  return (folder.status || 'draft') === 'active';
+}
 
 function findById(list, id) {
-  for (const f of list) { if (f.id === id) return f; if (f.subfolders?.length) { const x = findById(f.subfolders, id); if (x) return x; } }
+  for (const f of list) {
+    if (f.id === id) return f;
+    if (f.subfolders?.length) {
+      const x = findById(f.subfolders, id);
+      if (x) return x;
+    }
+  }
+
   return null;
 }
 
@@ -183,8 +225,13 @@ function addFiles(folderId, newFiles) {
 function render() {
   const tree = computeVisibleTree();
   const query = ($('searchBox')?.value || '').toLowerCase();
+  const main = $('mainList');
+  if (!main) return;
+  main.innerHTML = '';
 
-  const main = $('mainList'); main.innerHTML = '';
+  const side = $('sidebarList');
+  if (side) side.innerHTML = '';
+
 
   if (tree.length === 0) {
     main.innerHTML = '<div class="small">No active assignments yet. If you were recently enrolled, your lecturer may still be preparing them.</div>';
@@ -207,7 +254,11 @@ function render() {
       activeCount++;
       if (daysUntil(node.dueDate) <= 7) dueSoon++;
       const sub = mySubs.find(s => s.folderId === node.id);
-      if (sub) { submittedCount++; if (sub.graded) graded++; }
+      if (sub) {
+        submittedCount++;
+        if (sub.graded) graded++;
+      }
+
     }
 
     const wrapper = document.createElement('div');
@@ -250,14 +301,27 @@ function render() {
     }
   }
 
-  // Main render only
-  tree.forEach(node => { renderNode(main, node, 0, ''); });
+function renderSidebar(node, level = 0, parentPath = '') {
+    const path = parentPath ? parentPath + ' / ' + node.name : node.name;
+    const row = document.createElement('div');
+    row.className = 'assignment';
+    row.style.paddingLeft = (level * 12) + 'px';
+    row.innerHTML = `<div class="left"><span class="name">${path}</span><div class="meta">${node.__meAssigned ? '<span class="badge">Mine</span>' : ''} • ${node.dueDate ? ('Due ' + fmtDateShort(node.dueDate)) : 'No due'}</div></div>`;
+    if (side) side.appendChild(row);
+    (node.subfolders || []).forEach(ch => renderSidebar(ch, level + 1, path));
+  }
+
+  // Main + sidebar render
+  tree.forEach(node => {
+    renderNode(main, node, 0, '');
+    if (side) renderSidebar(node);
+  });
 
   // Stats
-  $('statActive').textContent = activeCount;
-  $('statSubmitted').textContent = submittedCount;
-  $('statDueSoon').textContent = dueSoon;
-  $('statGraded').textContent = graded;
+  if ($('statActive')) $('statActive').textContent = activeCount;
+  if ($('statSubmitted')) $('statSubmitted').textContent = submittedCount;
+  if ($('statDueSoon')) $('statDueSoon').textContent = dueSoon;
+  if ($('statGraded')) $('statGraded').textContent = graded;
 }
 
 /********************
@@ -311,18 +375,29 @@ function renderInlineSubmission(node) {
 async function handleSubmit(folderId) {
   // Guard: must still be assigned and must be a leaf folder
   const folder = findById(getFolders(), folderId);
-  if (!folder) { return showNote('Assignment not found', 'error'); }
-  if (!isActive(folder) || !isAssignedToMe(folder)) {
-    return showNote('You are not allowed to submit to this assignment.', 'error');
+  if (!folder) {
+    showNote('Assignment not found', 'error');
+    return;
+
   }
+  if (!isActive(folder) || !isAssignedToMe(folder)) {
+    showNote('You are not allowed to submit to this assignment.', 'error');
+    return;
+  }
+
   if (folder.subfolders && folder.subfolders.length) {
-    return showNote('You can only submit to the final child folder.', 'error');
+    showNote('You can only submit to the final child folder.', 'error');
+    return;
+
   }
 
   // Check for selected files
   const selectedFilesForFolder = selectedFiles.get(folderId) || [];
   if (selectedFilesForFolder.length === 0) {
-    return showNote('Please choose at least one file to upload', 'warning');
+
+    showNote('Please choose at least one file to upload', 'warning');
+    return;
+
   }
 
   const fileIds = await saveFiles(selectedFilesForFolder);
@@ -360,8 +435,16 @@ async function handleSubmit(folderId) {
 
 function downloadMySubmission(subId) {
   const sub = getSubs().find(s => s.id === subId && s.studentId === String(currentUser.id));
-  if (!sub) { return showNote('Submission not found', 'error'); }
-  if (!sub.fileIds?.length) { return showNote('No files in this submission', 'warning'); }
+
+  if (!sub) {
+    showNote('Submission not found', 'error');
+    return;
+  }
+  if (!sub.fileIds?.length) {
+    showNote('No files in this submission', 'warning');
+    return;
+  }
+
   // Download each file individually
   sub.fileIds.forEach(fid => downloadFile(fid));
   showNote(`Downloading ${sub.fileIds.length} file(s)...`);
@@ -370,9 +453,17 @@ function downloadMySubmission(subId) {
 function deleteMySubmission(subId) {
   const subs = getSubs();
   const idx = subs.findIndex(s => s.id === subId && s.studentId === String(currentUser.id));
-  if (idx === -1) return showNote('Submission not found', 'error');
+
+  if (idx === -1) {
+    showNote('Submission not found', 'error');
+    return;
+  }
   if (!confirm('Delete your submission? This only unlinks the files from this submission.')) return;
-  subs.splice(idx, 1); saveSubs(subs); showNote('Submission deleted'); render();
+  subs.splice(idx, 1);
+  saveSubs(subs);
+  showNote('Submission deleted');
+  render();
+
 }
 
 /********************
@@ -380,6 +471,13 @@ function deleteMySubmission(subId) {
  ********************/
 document.addEventListener('DOMContentLoaded', () => {
   render();
+
+
+  // searching
+  const searchBox = $('searchBox');
+  if (searchBox) {
+    searchBox.addEventListener('input', render);
+  }
 
   // File input handling
   document.addEventListener('change', (e) => {
@@ -397,11 +495,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // toggle tree
     const tid = t.getAttribute('data-toggle');
-    if (tid) { expanded.has(tid) ? expanded.delete(tid) : expanded.add(tid); render(); }
+
+    if (tid) {
+      expanded.has(tid) ? expanded.delete(tid) : expanded.add(tid);
+      render();
+    }
 
     // download lecturer material
     const mat = t.getAttribute('data-download-mat');
-    if (mat) { e.preventDefault(); downloadFile(mat); }
+    if (mat) {
+      e.preventDefault();
+      downloadFile(mat);
+    }
+
 
     // submit/update submission
     const subFor = t.getAttribute('data-submit');
@@ -412,11 +518,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // download my submission files
     const dsub = t.getAttribute('data-download-sub');
-    if (dsub) { e.preventDefault(); downloadMySubmission(dsub); }
+    if (dsub) {
+      e.preventDefault();
+      downloadMySubmission(dsub);
+    }
 
     // delete my submission
     const del = t.getAttribute('data-delete-sub');
-    if (del) { e.preventDefault(); deleteMySubmission(del); }
+    if (del) {
+      e.preventDefault();
+      deleteMySubmission(del);
+    }
+
   });
 
   // listen to storage changes (another tab/lecturer updates)
@@ -425,36 +538,14 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // logout
-  $('logoutBtn').addEventListener('click', () => {
-    localStorage.removeItem('automark_token');
-    localStorage.removeItem('automark_user');
-    window.location.href = 'Login and Registration.html';
-  });
 
-  // diagnostics
-  $('runDiagBtn').addEventListener('click', runDiagnostics);
+  const logoutBtn = $('logoutBtn');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', () => {
+      localStorage.removeItem(SESSION_KEY);
+      window.location.href = 'login&register.html';
+    });
+  }
+
 });
 
-/********************
- * Diagnostics       *
- ********************/
-function runDiagnostics() {
-  const errs = []; const warn = [];
-  try {
-    if (!currentUser) errs.push('No session user.');
-    if (currentUser && currentUser.role !== 'student') errs.push('Session is not a student.');
-
-    const folders = getFolders();
-    if (!Array.isArray(folders)) errs.push('Folders storage is not an array.');
-
-    const subs = getSubs();
-    if (!Array.isArray(subs)) errs.push('Submissions storage is not an array.');
-
-    // Tree compute should not throw
-    computeVisibleTree();
-
-  } catch (e) { errs.push('Exception during diagnostics: ' + (e?.message || e)); }
-
-  if (errs.length) { console.error('[Diagnostics errors]', errs); showNote('Diagnostics: ' + errs.join(' | '), 'error'); }
-  else { console.info('[Diagnostics warnings]', warn); showNote('Diagnostics passed. ' + (warn.length ? ('Warnings: ' + warn.join(' | ')) : 'All good.'), 'success'); }
-}

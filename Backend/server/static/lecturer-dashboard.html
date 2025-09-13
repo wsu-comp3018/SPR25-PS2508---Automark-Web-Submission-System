@@ -4,8 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>AutoMark — Lecturer Dashboard</title>
-  <link rel="stylesheet" type="text/css" href="/static/css/pages/lecturer-dashboard.css" /> 
-  
+  <link rel="stylesheet" type="text/css" href="/css/pages/lecturer-dashboard.css" /> 
 </head>
 <body>
   <header>
@@ -13,7 +12,7 @@
       <div class="logo">📚 AutoMark</div>
       <div>
         <h1>Lecturer Dashboard</h1>
-        <div class="small">Create folders, assign to students, and manage submissions</div>
+        <div class="small">Manage your subjects and assignments</div>
       </div>
     </div>
     <div class="controls">
@@ -26,7 +25,7 @@
   <div class="stats">
     <div class="stat">
       <div class="number" id="totalFolders">0</div>
-      <div class="label">Total Folders</div>
+      <div class="label">Total Assignments</div>
     </div>
     <div class="stat">
       <div class="number" id="totalStudents">0</div>
@@ -36,88 +35,84 @@
       <div class="number" id="totalSubmissions">0</div>
       <div class="label">Submissions</div>
     </div>
-    <div class="stat">
-      <div class="number" id="pendingReview">0</div>
-      <div class="label">Pending Review</div>
-    </div>
+    
   </div>
 
   <div class="layout">
     <!-- LEFT PANEL -->
     <aside class="panel">
-      <h3 style="margin-top:0">Create Assignment Folder</h3>
-      <div class="small">Create organized folder structures with assignments and sub-assignments.</div>
-      
-      <div style="margin-top:16px">
-        <div class="form-group">
-          <label>Folder Name</label>
-          <input type="text" id="newFolderName" placeholder="e.g. Assignment 1 - Data Structures" />
-        </div>
+      <!-- Hidden Create Assignment Section -->
+      <div class="create-assignment-section">
+        <h3 style="margin-top:0">Create Assignment Folder</h3>
+        <div class="small">Create organized folder structures with assignments and sub-assignments.</div>
         
-        <div class="form-group">
-          <label>Description (Optional)</label>
-          <textarea id="folderDescription" rows="2" placeholder="Brief description of the assignment..."></textarea>
-        </div>
-        
-        <div class="form-row">
+        <div style="margin-top:16px">
           <div class="form-group">
-            <label>Due Date (Optional)</label>
-            <input type="datetime-local" id="folderDueDate" />
+            <label>Folder Name</label>
+            <input type="text" id="newFolderName" placeholder="e.g. Assignment 1 - Data Structures" />
           </div>
+          
           <div class="form-group">
-            <label>Max Points</label>
-            <input type="number" id="folderMaxPoints" placeholder="100" min="0" />
+            <label>Description (Optional)</label>
+            <textarea id="folderDescription" rows="2" placeholder="Brief description of the assignment..."></textarea>
+          </div>
+          
+          <div class="form-row">
+            <div class="form-group">
+              <label>Due Date (Optional)</label>
+              <input type="datetime-local" id="folderDueDate" />
+            </div>
+            <div class="form-group">
+              <label>Max Points</label>
+              <input type="number" id="folderMaxPoints" placeholder="100" min="0" />
+            </div>
+          </div>
+          
+          <div class="form-group">
+            <label>Attach Instructions/Materials (Optional)</label>
+            <input type="file" id="folderFile" class="file-input" multiple accept=".pdf,.doc,.docx,.txt,.zip" />
+            <label for="folderFile" class="file-label">Choose files...</label>
+            <div id="folderFileInfo" class="file-info">No files selected</div>
+          </div>
+          
+          <div class="form-group">
+            <label>Assign to Students</label>
+            <div class="search-box">
+              <input type="text" id="studentSearch" placeholder="Search students..." />
+            </div>
+            <div class="assign-list" id="assignUserList"></div>
+          </div>
+          
+          <div class="form-group">
+            <label>Folder Status</label>
+            <select id="folderStatus">
+              <option value="draft">Draft (Hidden from students)</option>
+              <option value="active">Active (Visible to students)</option>
+            </select>
+          </div>
+          
+          <div style="margin-top:16px;display:flex;gap:8px">
+            <button id="createFolderBtn">Create Folder</button>
+            <button id="resetFoldersBtn" class="ghost">Clear Form</button>
           </div>
         </div>
         
-        <div class="form-group">
-          <label>Attach Instructions/Materials (Optional)</label>
-          <input type="file" id="folderFile" class="file-input" multiple accept=".pdf,.doc,.docx,.txt,.zip" />
-          <label for="folderFile" class="file-label">Choose files...</label>
-          <div id="folderFileInfo" class="file-info">No files selected</div>
-        </div>
-        
-        <div class="form-group">
-          <label>Assign to Students</label>
-          <div class="search-box">
-            <input type="text" id="studentSearch" placeholder="Search students..." />
-          </div>
-          <div class="assign-list" id="assignUserList"></div>
-        </div>
-        
-        <div class="form-group">
-          <label>Folder Status</label>
-          <select id="folderStatus">
-            <option value="draft">Draft (Hidden from students)</option>
-            <option value="active">Active (Visible to students)</option>
-          </select>
-        </div>
-        
-        <div style="margin-top:16px;display:flex;gap:8px">
-          <button id="createFolderBtn">Create Folder</button>
-          <button id="resetFoldersBtn" class="ghost">Clear Form</button>
-        </div>
+        <hr style="margin:20px 0;border:none;border-top:1px solid #eee" />
       </div>
-      
-      <hr style="margin:20px 0;border:none;border-top:1px solid #eee" />
       
       <h4 style="margin:6px 0">Quick Actions</h4>
       <div style="display:flex;flex-direction:column;gap:8px">
+        <button id="createAssignmentBtn">Create New Assignment</button>
         <button id="showAllSubs" class="ghost">View All Submissions</button>
-        <button id="exportData" class="ghost">Export Data (JSON)</button>
         <button id="bulkAssign" class="ghost">Bulk Assignment</button>
       </div>
-      
-      <div class="footer">
-        Data stored locally in browser storage.<br>
-        Export regularly to prevent data loss.
-      </div>
+    
     </aside>
 
     <!-- RIGHT PANEL -->
     <main class="panel">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <h3 style="margin:0">Assignment Structure</h3>
+        <h3 style="margin:0">My Subjects & Assignments</h3>
         <div style="display:flex;gap:8px;align-items:center">
           <button id="expandAllBtn" class="toggle-btn">Expand All</button>
           <button id="collapseAllBtn" class="toggle-btn">Collapse All</button>
@@ -125,10 +120,10 @@
       </div>
       
       <div class="breadcrumb" id="breadcrumb" style="display:none">
-        <a href="#" id="breadcrumbHome">All Folders</a>
+        <a href="#" id="breadcrumbHome">All Subjects</a>
       </div>
       
-      <div class="small">Click folders to expand/collapse. Use actions to manage assignments and view submissions.</div>
+      <div class="small">Your assigned subjects appear as folders. Click to expand and manage assignments.</div>
       <div class="list" id="folderList" style="margin-top:12px"></div>
       
       <!-- Submissions View -->
@@ -143,6 +138,69 @@
         <div class="submission-list" id="submissionsContainer"></div>
       </div>
     </main>
+  </div>
+
+  <!-- Create Assignment Modal -->
+  <div id="createAssignmentModal" class="modal" style="display:none">
+    <div class="modal-content">
+      <h3 style="margin-top:0">Create New Assignment</h3>
+      
+      <div class="form-group">
+        <label>Subject</label>
+        <select id="assignmentSubject" required>
+          <option value="">Select Subject</option>
+        </select>
+      </div>
+      
+      <div class="form-group">
+        <label>Assignment Name</label>
+        <input type="text" id="assignmentName" placeholder="e.g. Assignment 1 - Data Structures" required />
+      </div>
+      
+      <div class="form-group">
+        <label>Description (Optional)</label>
+        <textarea id="assignmentDescription" rows="2" placeholder="Brief description of the assignment..."></textarea>
+      </div>
+      
+      <div class="form-row">
+        <div class="form-group">
+          <label>Due Date (Optional)</label>
+          <input type="datetime-local" id="assignmentDueDate" />
+        </div>
+        <div class="form-group">
+          <label>Max Points</label>
+          <input type="number" id="assignmentMaxPoints" placeholder="100" min="0" />
+        </div>
+      </div>
+      
+      <div class="form-group">
+        <label>Attach Instructions/Materials (Optional)</label>
+        <input type="file" id="assignmentFile" class="file-input" multiple accept=".pdf,.doc,.docx,.txt,.zip" />
+        <label for="assignmentFile" class="file-label">Choose files...</label>
+        <div id="assignmentFileInfo" class="file-info">No files selected</div>
+      </div>
+      
+      <div class="form-group">
+        <label>Assign to Students</label>
+        <div class="search-box">
+          <input type="text" id="assignmentStudentSearch" placeholder="Search students..." />
+        </div>
+        <div class="assign-list" id="assignmentStudentList"></div>
+      </div>
+      
+      <div class="form-group">
+        <label>Status</label>
+        <select id="assignmentStatus">
+          <option value="draft">Draft (Hidden from students)</option>
+          <option value="active" selected>Active (Visible to students)</option>
+        </select>
+      </div>
+      
+      <div class="modal-actions">
+        <button id="cancelAssignmentBtn" class="ghost">Cancel</button>
+        <button id="saveAssignmentBtn">Create Assignment</button>
+      </div>
+    </div>
   </div>
 
   <!-- Grading Modal -->
@@ -183,7 +241,6 @@
     </div>
   </div>
 
-  <!-- Other modals (subfolder, edit assignment, bulk assign) remain the same -->
   <!-- Subfolder Creation -->
   <div id="subfolderModal" class="modal" style="display:none">
     <div class="modal-content">
@@ -217,7 +274,7 @@
       </div>
       
       <div class="form-group">
-        <label>Assign to Students (from parent folder)</label>
+        <label>Assign to Students (from parent assignment)</label>
         <div class="assign-list" id="subfolderAssignList"></div>
       </div>
       
@@ -225,7 +282,7 @@
         <label>Status</label>
         <select id="subfolderStatus">
           <option value="draft">Draft</option>
-          <option value="active">Active</option>
+          <option value="active" selected>Active</option>
         </select>
       </div>
       
@@ -275,7 +332,7 @@
       
       <div class="modal-actions">
         <button id="cancelEditAssignmentBtn" class="ghost">Cancel</button>
-        <button id="saveAssignmentBtn">Save Changes</button>
+        <button id="saveEditAssignmentBtn">Save Changes</button>
       </div>
     </div>
   </div>
@@ -285,7 +342,7 @@
     <div class="modal-content">
       <h3 style="margin-top:0">Bulk Student Assignment</h3>
       <div class="form-group">
-        <label>Select Folders to Assign</label>
+        <label>Select Assignments to Assign</label>
         <div class="assign-list" id="bulkFolderList" style="max-height:200px"></div>
       </div>
       
@@ -307,7 +364,17 @@
 
   <!-- Notification -->
   <div id="notification" class="notification"></div>
-
-<script type="module" src="/static/js/pages/lecturer-dashboard.js"></script>
 </body>
+  <script type="module" src="/js/pages/lecturer-dashboard.js"></script>
+  <script>
+  document.addEventListener('DOMContentLoaded', function() {
+    var logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+      logoutBtn.addEventListener('click', function() {
+        localStorage.removeItem('automark_user');
+        window.location.href = 'login&register.html';
+      });
+    }
+  });
+  </script>
 </html>

@@ -319,6 +319,7 @@ class GradeSubmission(BaseModel):
     score: int
     feedback: Optional[str] = None
 
+
 class SubjectCreate(BaseModel):
     code: str
     name: str
@@ -856,6 +857,7 @@ def delete_ssh_user_admin(username: str):
         logger.error(f"Error deleting SSH user {username}: {e}")
         raise HTTPException(500, f"Failed to delete SSH user: {str(e)}")
 
+
 # API endpoints for subjects
 @app.get("/api/v1/subjects")
 async def get_all_subjects(current_user: dict = Depends(get_current_user)):
@@ -926,3 +928,4 @@ async def get_subject(subject_code: str, current_user: dict = Depends(get_curren
     
     finally:
         conn.close()
+
