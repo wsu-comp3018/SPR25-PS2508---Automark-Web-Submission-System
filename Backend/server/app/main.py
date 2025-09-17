@@ -11,6 +11,7 @@ import os
 from typing import List, Optional, Dict
 import json
 from contextlib import asynccontextmanager
+import base64
 
 # SSH user management
 from ssh_user_manager import create_ssh_user_for_registration
@@ -23,6 +24,20 @@ STATIC_DIR = BASE_DIR / "static"
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Single source for default student → subjects mapping
+DEFAULT_ASSIGNED_SUBJECTS: Dict[str, List[str]] = {
+    "student_alice": ["INFS 8586", "COMP 0067"],
+    "student_bob": ["COMP 0420", "COMP 5055"],
+    "student_carol": ["COMP 0067", "INFS 8586", "COMP 0420"],
+}
+
+def get_assigned_subject_codes_for_username(username: str) -> List[str]:
+    codes = DEFAULT_ASSIGNED_SUBJECTS.get(username)
+    if codes:
+        return codes
+    # Fallback: no subjects unless explicitly mapped
+    return []
 
 def init_db():
     try:
@@ -144,7 +159,7 @@ def init_db():
         """)
         
         print("👨‍🎓 INIT_DB: Creating hardcoded students...")
-        
+        now = now_iso()
         # Hardcoded student information with shuffled subject assignments
         students = [
             {
@@ -153,7 +168,7 @@ def init_db():
                 "password": "alicepass123",
                 "first_name": "Alice",
                 "last_name": "Smith",
-                "assigned_subjects": ["INFS 8586", "COMP 0067"]  # OOP + Database
+                "assigned_subjects": ["INFS 8586", "COMP 0067"]
             },
             {
                 "username": "student_bob",
@@ -161,7 +176,7 @@ def init_db():
                 "password": "bobpass123",
                 "first_name": "Bob",
                 "last_name": "Johnson",
-                "assigned_subjects": ["COMP 0420", "COMP 5055"]  # Programming + Software Eng
+                "assigned_subjects": ["COMP 0420", "COMP 5055"]
             },
             {
                 "username": "student_carol",
@@ -169,7 +184,7 @@ def init_db():
                 "password": "carolpass123",
                 "first_name": "Carol",
                 "last_name": "Williams",
-                "assigned_subjects": ["COMP 0067", "INFS 8586", "COMP 0420"]  # Database + OOP + Programming
+                "assigned_subjects": ["COMP 0067", "INFS 8586", "COMP 0420"]
             }
         ]
 
@@ -207,24 +222,20 @@ def init_db():
                         print(f"⚠️  SSH user creation error for {student['username']}: {e}")
                     
                     # Auto-assign student to assignments for their specific subjects only
-                    subject_codes_str = "', '".join(student["assigned_subjects"])
-                    c.execute(f"""
-                        SELECT id FROM folders WHERE subject_code IN ('{subject_codes_str}')
-                    """)
-                    assigned_folder_ids = [row[0] for row in c.fetchall()]
-                    
-                    for folder_id in assigned_folder_ids:
-                        c.execute("""
-                            INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
-                            VALUES (?, ?, ?)
-                        """, (folder_id, student_id, now))
-                    
-                    if assigned_folder_ids:
-                        print(f"   ✅ Auto-assigned to {len(assigned_folder_ids)} assignments in their subjects")
+                    if student["assigned_subjects"]:
+                        placeholders = ",".join(["?"] * len(student["assigned_subjects"]))
+                        c.execute(f"SELECT id FROM folders WHERE subject_code IN ({placeholders})", student["assigned_subjects"])
+                        assigned_folder_ids = [row[0] for row in c.fetchall()]
+                        for folder_id in assigned_folder_ids:
+                            c.execute("""
+                                INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
+                                VALUES (?, ?, ?)
+                            """, (folder_id, student_id, now))
+                        if assigned_folder_ids:
+                            print(f"   ✅ Auto-assigned to {len(assigned_folder_ids)} assignments in their subjects")
                 
                 else:
                     print(f"⚠️  Student already exists: {student['username']}")
-                    
             except sqlite3.Error as e:
                 print(f"❌ Failed to create student {student['username']}: {e}")
                 continue
@@ -443,6 +454,11 @@ class FileCreate(BaseModel):
     folder_id: Optional[int] = None
     submission_id: Optional[int] = None
 
+# New: student submission payload
+class StudentSubmissionCreate(BaseModel):
+    folder_id: int
+    files: List[FileCreate]
+
 @app.get("/")
 async def serverIndex():
     return FileResponse(STATIC_DIR / "login&register.html")
@@ -513,18 +529,23 @@ def register(body: RegisterIn):
         user_id = c.lastrowid
         conn.commit()
         
-        # If this is a student, auto-assign them to ALL existing assignments
+        # Assign student to subjects/assignments based on mapping only
         if body.role == "student":
-            c.execute("SELECT id FROM folders")
-            folder_ids = [row[0] for row in c.fetchall()]
-            assign_time = now_iso()
-            for folder_id in folder_ids:
-                c.execute("""
-                    INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
-                    VALUES (?, ?, ?)
-                """, (folder_id, user_id, assign_time))
-            conn.commit()
-            print(f"✅ Auto-assigned student {body.username} to {len(folder_ids)} existing assignments")
+            subject_codes = get_assigned_subject_codes_for_username(body.username.strip())
+            if subject_codes:
+                placeholders = ",".join(["?"] * len(subject_codes))
+                c.execute(f"SELECT id FROM folders WHERE subject_code IN ({placeholders})", subject_codes)
+                folder_ids = [row[0] for row in c.fetchall()]
+                assign_time = now_iso()
+                for folder_id in folder_ids:
+                    c.execute("""
+                        INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
+                        VALUES (?, ?, ?)
+                    """, (folder_id, user_id, assign_time))
+                conn.commit()
+                print(f"✅ Auto-assigned student {body.username} to {len(folder_ids)} assignments in subjects {subject_codes}")
+            else:
+                print(f"ℹ️ No default subject mapping for {body.username}; no assignments created")
             
     except sqlite3.IntegrityError as e:
         conn.close()
@@ -686,1360 +707,505 @@ async def get_current_user(request: Request):
     
     return result["user"]
 
-# Folders endpoints
-@app.get("/api/v1/folders")
-async def get_lecturer_folders(current_user: dict = Depends(get_current_user)):
-    """Get all folders created by the current lecturer with enhanced debugging"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can access folders")
-    
+# ------------------------------
+# Helper utilities for lecturers
+# ------------------------------
+def _dict_rows(cursor):
+    return [dict(r) for r in cursor.fetchall()]
+
+def _ensure_lecturer(user: dict):
+    if user.get("role") != "lecturer":
+        raise HTTPException(status_code=403, detail="Only lecturers can access this resource")
+
+def _ensure_folder_owner(c: sqlite3.Cursor, folder_id: int, lecturer_id: int):
+    c.execute("SELECT lecturer_id FROM folders WHERE id = ?", (folder_id,))
+    row = c.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    if row[0] != lecturer_id:
+        raise HTTPException(status_code=403, detail="You do not own this folder")
+
+# ------------------------------
+# Lecturer + shared endpoints
+# ------------------------------
+
+@app.get("/api/v1/subjects")
+def list_subjects(current_user: dict = Depends(get_current_user)):
+    """List all subjects (lecturers will filter client-side or use lecturer_id)."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
     try:
-        print(f"🔍 Getting folders for lecturer: {current_user['id']} ({current_user['username']})")
-        
-        # First, check what subjects this lecturer has
         c.execute("""
-            SELECT code, name FROM subjects WHERE lecturer_id = ?
-        """, (current_user["id"],))
-        lecturer_subjects = c.fetchall()
-        
-        print(f"📚 Lecturer has {len(lecturer_subjects)} subjects:")
-        for subject in lecturer_subjects:
-            print(f"  - {subject['code']}: {subject['name']}")
-        
-        # Get folders with assigned student count and subject info
+            SELECT id, code, name, lecturer_id, created_at
+            FROM subjects
+            ORDER BY code
+        """)
+        return _dict_rows(c)
+    finally:
+        conn.close()
+
+@app.get("/api/v1/students")
+def list_students(current_user: dict = Depends(get_current_user)):
+    """List all active students (lecturer-only)."""
+    _ensure_lecturer(current_user)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
         c.execute("""
-            SELECT f.*, 
-                   s.name as subject_name,
-                   COUNT(fa.student_id) as assigned_students_count
-            FROM folders f
-            LEFT JOIN subjects s ON f.subject_code = s.code
-            LEFT JOIN folder_assignments fa ON f.id = fa.folder_id
-            WHERE f.lecturer_id = ?
-            GROUP BY f.id, f.name, f.description, f.due_date, f.max_points, f.status, 
-                     f.created_at, f.updated_at, f.lecturer_id, f.subject_code, s.name
-            ORDER BY f.created_at DESC
+            SELECT id, username, email, first_name, last_name, created_at
+            FROM users
+            WHERE role = 'student' AND is_active = 1
+            ORDER BY created_at DESC
+        """)
+        return _dict_rows(c)
+    finally:
+        conn.close()
+
+@app.get("/api/v1/folders")
+def list_folders(current_user: dict = Depends(get_current_user)):
+    """List assignments (folders) owned by the current lecturer."""
+    _ensure_lecturer(current_user)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT id, name, description, due_date, max_points, status,
+                   created_at, updated_at, lecturer_id, subject_code
+            FROM folders
+            WHERE lecturer_id = ?
+            ORDER BY COALESCE(updated_at, created_at) DESC
         """, (current_user["id"],))
-        
-        folders = c.fetchall()
-        
-        print(f"📁 Found {len(folders)} folders for lecturer:")
-        for folder in folders:
-            print(f"  - {folder['name']} ({folder['subject_code']}) - {folder['assigned_students_count']} students")
-        
-        return [dict(folder) for folder in folders]
-        
-    except sqlite3.Error as e:
-        print(f"❌ Database error getting folders: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        return _dict_rows(c)
     finally:
         conn.close()
 
 @app.post("/api/v1/folders")
-async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_current_user)):
-    """Create a new assignment folder with enhanced error handling"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can create folders")
-    
-    # Input validation
-    if not folder.name or not folder.name.strip():
-        raise HTTPException(status_code=400, detail="Assignment name is required")
-    
-    if not folder.subject_code or not folder.subject_code.strip():
-        raise HTTPException(status_code=400, detail="Subject code is required")
-    
-    if folder.max_points < 0:
-        raise HTTPException(status_code=400, detail="Maximum points must be non-negative")
-    
+def create_folder(payload: FolderCreate, current_user: dict = Depends(get_current_user)):
+    """Create an assignment (folder) and optionally assign students."""
+    _ensure_lecturer(current_user)
+    now = now_iso()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
     try:
-        # Start transaction
-        c.execute("BEGIN TRANSACTION")
-        
-        # Validate that subject exists and belongs to current lecturer
         c.execute("""
-            SELECT id, name FROM subjects 
-            WHERE code = ? AND lecturer_id = ?
-        """, (folder.subject_code.strip(), current_user["id"]))
-        
-        subject_result = c.fetchone()
-        if not subject_result:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Subject '{folder.subject_code}' not found or not assigned to you"
-            )
-        
-        print(f"✅ Subject validation passed: {folder.subject_code} -> {subject_result['name']}")
-        
-        # Check for duplicate assignment names within the same subject
-        c.execute("""
-            SELECT id FROM folders 
-            WHERE name = ? AND subject_code = ? AND lecturer_id = ?
-        """, (folder.name.strip(), folder.subject_code.strip(), current_user["id"]))
-        
-        if c.fetchone():
-            raise HTTPException(
-                status_code=409, 
-                detail=f"Assignment '{folder.name}' already exists in subject {folder.subject_code}"
-            )
-        
-        # Create folder with enhanced data
-        now = now_iso()
-        c.execute("""
-            INSERT INTO folders (
-                name, description, due_date, max_points, status, 
-                created_at, updated_at, lecturer_id, subject_code
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO folders (name, description, due_date, max_points, status,
+                                 created_at, updated_at, lecturer_id, subject_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            folder.name.strip(),
-            folder.description.strip() if folder.description else None,
-            folder.due_date,
-            folder.max_points,
-            folder.status,
+            payload.name.strip(),
+            (payload.description or None),
+            (payload.due_date or None),
+            int(payload.max_points or 100),
+            (payload.status or "draft"),
             now,
             now,
             current_user["id"],
-            folder.subject_code.strip()
+            payload.subject_code.strip()
         ))
-        
         folder_id = c.lastrowid
-        print(f"✅ Created folder with ID: {folder_id}")
-        
-        # Get all active students for automatic assignment
-        c.execute("SELECT id FROM users WHERE role = 'student' AND is_active = 1")
-        all_students = [row[0] for row in c.fetchall()]
-        
-        # Assign all students to the new assignment
-        if all_students:
-            for student_id in all_students:
+
+        # Optional: assign students (explicit)
+        if payload.student_ids:
+            assign_time = now
+            for sid in payload.student_ids:
                 c.execute("""
-                    INSERT INTO folder_assignments (folder_id, student_id, assigned_at)
+                    INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
                     VALUES (?, ?, ?)
-                """, (folder_id, student_id, now))
-            
-            print(f"✅ Auto-assigned {len(all_students)} students to assignment '{folder.name}'")
-        
-        # Commit transaction
-        c.execute("COMMIT")
-        
-        # Return the complete created folder with all relationships
-        c.execute("""
-            SELECT f.*, 
-                   s.name as subject_name,
-                   COUNT(fa.student_id) as assigned_students_count
-            FROM folders f
-            JOIN subjects s ON f.subject_code = s.code
-            LEFT JOIN folder_assignments fa ON f.id = fa.folder_id
-            WHERE f.id = ?
-            GROUP BY f.id
-        """, (folder_id,))
-        
-        new_folder = dict(c.fetchone())
-        
-        print(f"✅ Assignment '{folder.name}' created successfully with {new_folder['assigned_students_count']} students assigned")
-        
-        return new_folder
-        
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        c.execute("ROLLBACK")
-        raise
-    except sqlite3.IntegrityError as e:
-        c.execute("ROLLBACK")
-        error_msg = str(e).lower()
-        if "unique constraint" in error_msg and "name" in error_msg:
-            raise HTTPException(status_code=409, detail="Assignment name already exists")
-        elif "foreign key constraint" in error_msg:
-            raise HTTPException(status_code=400, detail="Invalid subject or lecturer reference")
+                """, (folder_id, int(sid), assign_time))
         else:
-            raise HTTPException(status_code=500, detail=f"Database constraint error: {str(e)}")
+            # Default auto-assign: all students whose assigned_subjects include this subject_code
+            subject_code = payload.subject_code.strip()
+            assign_time = now
+            c.execute("SELECT id, username FROM users WHERE role='student' AND is_active=1")
+            rows = c.fetchall()
+            auto_count = 0
+            for sid, uname in rows:
+                if subject_code in get_assigned_subject_codes_for_username(uname):
+                    c.execute("""
+                        INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
+                        VALUES (?, ?, ?)
+                    """, (folder_id, sid, assign_time))
+                    auto_count += 1
+            logger.info(f"Auto-assigned folder {folder_id} ({subject_code}) to {auto_count} students by assigned_subjects")
+
+        conn.commit()
+
+        c.execute("""
+            SELECT id, name, description, due_date, max_points, status,
+                   created_at, updated_at, lecturer_id, subject_code
+            FROM folders WHERE id = ?
+        """, (folder_id,))
+        row = c.fetchone()
+        return dict(row)
     except sqlite3.Error as e:
-        c.execute("ROLLBACK")
-        print(f"❌ Database error creating folder: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        c.execute("ROLLBACK")
-        print(f"❌ Unexpected error creating folder: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+        conn.rollback()
+        raise HTTPException(500, f"Database error: {str(e)}")
     finally:
         conn.close()
 
 @app.put("/api/v1/folders/{folder_id}")
-async def update_folder(folder_id: int, folder: FolderUpdate, current_user: dict = Depends(get_current_user)):
-    """Update a folder with comprehensive validation and error handling"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can update folders")
-    
+def update_folder(folder_id: int, payload: FolderUpdate, current_user: dict = Depends(get_current_user)):
+    """Update an assignment (folder) and optionally reassign students."""
+    _ensure_lecturer(current_user)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
     try:
-        # Start transaction
-        c.execute("BEGIN TRANSACTION")
-        
-        # Verify folder exists and belongs to current lecturer
-        c.execute("""
-            SELECT f.*, s.name as subject_name 
-            FROM folders f
-            JOIN subjects s ON f.subject_code = s.code
-            WHERE f.id = ? AND f.lecturer_id = ?
-        """, (folder_id, current_user["id"]))
-        
-        current_folder = c.fetchone()
-        if not current_folder:
-            raise HTTPException(status_code=404, detail="Assignment not found or access denied")
-        
-        current_folder = dict(current_folder)
-        print(f"✅ Found assignment to update: {current_folder['name']}")
-        
-        # Validate updated fields
-        update_fields = []
-        update_values = []
-        changes_made = []
-        
-        if folder.name is not None and folder.name.strip():
-            new_name = folder.name.strip()
-            if new_name != current_folder['name']:
-                # Check for duplicate names in same subject
-                c.execute("""
-                    SELECT id FROM folders 
-                    WHERE name = ? AND subject_code = ? AND lecturer_id = ? AND id != ?
-                """, (new_name, current_folder['subject_code'], current_user["id"], folder_id))
-                
-                if c.fetchone():
-                    raise HTTPException(
-                        status_code=409, 
-                        detail=f"Assignment '{new_name}' already exists in this subject"
-                    )
-                
-                update_fields.append("name = ?")
-                update_values.append(new_name)
-                changes_made.append(f"name: '{current_folder['name']}' → '{new_name}'")
-        
-        if folder.description is not None:
-            new_desc = folder.description.strip() if folder.description else None
-            if new_desc != current_folder.get('description'):
-                update_fields.append("description = ?")
-                update_values.append(new_desc)
-                changes_made.append(f"description updated")
-        
-        if folder.due_date is not None:
-            if folder.due_date != current_folder.get('due_date'):
-                update_fields.append("due_date = ?")
-                update_values.append(folder.due_date if folder.due_date else None)
-                changes_made.append(f"due date updated")
-        
-        if folder.max_points is not None:
-            if folder.max_points < 0:
-                raise HTTPException(status_code=400, detail="Maximum points cannot be negative")
-            if folder.max_points != current_folder['max_points']:
-                update_fields.append("max_points = ?")
-                update_values.append(folder.max_points)
-                changes_made.append(f"max points: {current_folder['max_points']} → {folder.max_points}")
-        
-        if folder.status is not None:
-            valid_statuses = ['draft', 'published', 'closed']
-            if folder.status not in valid_statuses:
-                raise HTTPException(status_code=400, detail=f"Status must be one of: {valid_statuses}")
-            if folder.status != current_folder['status']:
-                update_fields.append("status = ?")
-                update_values.append(folder.status)
-                changes_made.append(f"status: '{current_folder['status']}' → '{folder.status}'")
-        
-        # Update folder if there are changes
-        if update_fields:
-            update_fields.append("updated_at = ?")
-            update_values.append(now_iso())
-            update_values.append(folder_id)
-            
-            c.execute(f"UPDATE folders SET {', '.join(update_fields)} WHERE id = ?", update_values)
-            print(f"✅ Updated folder fields: {', '.join(changes_made)}")
-        
-        # Update student assignments if provided
-        if folder.student_ids is not None:
-            # Get current assignments
+        _ensure_folder_owner(c, folder_id, current_user["id"])
+
+        fields = []
+        values = []
+        if payload.name is not None:
+            fields.append("name = ?"); values.append(payload.name.strip())
+        if payload.description is not None:
+            fields.append("description = ?"); values.append(payload.description.strip() if payload.description else None)
+        if payload.due_date is not None:
+            fields.append("due_date = ?"); values.append(payload.due_date or None)
+        if payload.max_points is not None:
+            fields.append("max_points = ?"); values.append(int(payload.max_points))
+        if payload.status is not None:
+            fields.append("status = ?"); values.append(payload.status.strip())
+        # subject_code is not editable via update payload per current UI
+        fields.append("updated_at = ?"); values.append(now_iso())
+
+        if fields:
+            q = "UPDATE folders SET " + ", ".join(fields) + " WHERE id = ?"
+            values.append(folder_id)
+            c.execute(q, values)
+
+        # Reassign students if provided (replace set)
+        if payload.student_ids is not None:
+            new_ids = set(int(x) for x in payload.student_ids)
             c.execute("SELECT student_id FROM folder_assignments WHERE folder_id = ?", (folder_id,))
-            current_students = {row[0] for row in c.fetchall()}
-            new_students = set(folder.student_ids)
-            
-            # Students to add
-            to_add = new_students - current_students
-            # Students to remove
-            to_remove = current_students - new_students
-            
-            if to_remove:
-                c.execute(f"""
-                    DELETE FROM folder_assignments 
-                    WHERE folder_id = ? AND student_id IN ({','.join(['?' for _ in to_remove])})
-                """, [folder_id] + list(to_remove))
-                print(f"✅ Removed {len(to_remove)} student assignments")
-            
-            if to_add:
-                # Validate that all student IDs exist and are active
-                if to_add:
-                    placeholders = ','.join(['?' for _ in to_add])
-                    c.execute(f"""
-                        SELECT id FROM users 
-                        WHERE id IN ({placeholders}) AND role = 'student' AND is_active = 1
-                    """, list(to_add))
-                    valid_students = {row[0] for row in c.fetchall()}
-                    invalid_students = to_add - valid_students
-                    
-                    if invalid_students:
-                        raise HTTPException(
-                            status_code=400, 
-                            detail=f"Invalid student IDs: {list(invalid_students)}"
-                        )
-                
-                # Add new assignments
-                assign_time = now_iso()
-                for student_id in to_add:
-                    c.execute("""
-                        INSERT INTO folder_assignments (folder_id, student_id, assigned_at)
-                        VALUES (?, ?, ?)
-                    """, (folder_id, student_id, assign_time))
-                print(f"✅ Added {len(to_add)} student assignments")
-            
-            if to_add or to_remove:
-                changes_made.append(f"student assignments: +{len(to_add)}, -{len(to_remove)}")
-        
-        # Commit transaction
-        c.execute("COMMIT")
-        
-        # Return updated folder with full details
-        c.execute("""
-            SELECT f.*, 
-                   s.name as subject_name,
-                   COUNT(fa.student_id) as assigned_students_count
-            FROM folders f
-            JOIN subjects s ON f.subject_code = s.code
-            LEFT JOIN folder_assignments fa ON f.id = fa.folder_id
-            WHERE f.id = ?
-            GROUP BY f.id
-        """, (folder_id,))
-        
-        updated_folder = dict(c.fetchone())
-        
-        if changes_made:
-            print(f"✅ Assignment '{updated_folder['name']}' updated successfully. Changes: {'; '.join(changes_made)}")
-        else:
-            print(f"✅ No changes made to assignment '{updated_folder['name']}'")
-        
-        return updated_folder
-        
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        c.execute("ROLLBACK")
-        raise
-    except sqlite3.IntegrityError as e:
-        c.execute("ROLLBACK")
-        error_msg = str(e).lower()
-        if "unique constraint" in error_msg and "name" in error_msg:
-            raise HTTPException(status_code=409, detail="Assignment name already exists in this subject")
-        elif "foreign key constraint" in error_msg:
-            raise HTTPException(status_code=400, detail="Invalid reference in assignment data")
-        else:
-            raise HTTPException(status_code=500, detail=f"Database constraint error: {str(e)}")
-    except sqlite3.Error as e:
-        c.execute("ROLLBACK")
-        print(f"❌ Database error updating folder {folder_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        c.execute("ROLLBACK")
-        print(f"❌ Unexpected error updating folder {folder_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
-    finally:
-        conn.close()
+            current_ids = set(r[0] for r in c.fetchall())
 
-@app.delete("/api/v1/folders/{folder_id}")
-async def delete_folder(folder_id: int, current_user: dict = Depends(get_current_user)):
-    """Delete a folder and its assignments"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can delete folders")
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    try:
-        # Verify folder belongs to current lecturer
-        c.execute("SELECT lecturer_id FROM folders WHERE id = ?", (folder_id,))
-        result = c.fetchone()
-        if not result or result[0] != current_user["id"]:
-            raise HTTPException(status_code=404, detail="Folder not found")
-        
-        # Delete folder assignments first (foreign key constraint)
-        c.execute("DELETE FROM folder_assignments WHERE folder_id = ?", (folder_id,))
-        
-        # Delete folder
-        c.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
-        
-        conn.commit()
-        return {"message": "Folder deleted successfully"}
-        
-    except sqlite3.Error as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        conn.close()
+            to_add = new_ids - current_ids
+            to_del = current_ids - new_ids
 
-# Additional endpoints for assignment management
-@app.get("/api/v1/folders/{folder_id}/assignments")
-async def get_folder_assignments(folder_id: int, current_user: dict = Depends(get_current_user)):
-    """Get all student assignments for a specific folder with enhanced details"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can access folder assignments")
-    
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    try:
-        # Verify folder belongs to current lecturer
-        c.execute("SELECT lecturer_id, name FROM folders WHERE id = ?", (folder_id,))
-        result = c.fetchone()
-        if not result or result[0] != current_user["id"]:
-            raise HTTPException(status_code=404, detail="Assignment not found or access denied")
-        
-        # Get all students with their assignment status and submission info
-        c.execute("""
-            SELECT u.id, u.username, u.first_name, u.last_name, u.email,
-                   fa.assigned_at,
-                   CASE WHEN fa.student_id IS NOT NULL THEN 1 ELSE 0 END as is_assigned,
-                   s.submitted_at, s.status as submission_status, s.score
-            FROM users u
-            LEFT JOIN folder_assignments fa ON u.id = fa.student_id AND fa.folder_id = ?
-            LEFT JOIN submissions s ON u.id = s.student_id AND s.folder_id = ?
-            WHERE u.role = 'student' AND u.is_active = 1
-            ORDER BY u.first_name, u.last_name
-        """, (folder_id, folder_id))
-        
-        assignments = c.fetchall()
-        return [dict(assignment) for assignment in assignments]
-        
-    except sqlite3.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        conn.close()
-
-@app.delete("/api/v1/folders/{folder_id}/assign/{student_id}")
-async def unassign_student_from_folder(folder_id: int, student_id: int, current_user: dict = Depends(get_current_user)):
-    """Unassign a student from a folder"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can unassign students")
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    try:
-        # Verify folder belongs to current lecturer
-        c.execute("SELECT lecturer_id FROM folders WHERE id = ?", (folder_id,))
-        result = c.fetchone()
-        if not result or result[0] != current_user["id"]:
-            raise HTTPException(status_code=404, detail="Folder not found")
-        
-        # Unassign student from folder
-        c.execute("""
-            DELETE FROM folder_assignments 
-            WHERE folder_id = ? AND student_id = ?
-        """, (folder_id, student_id))
-        
-        if c.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Student assignment not found")
-        
-        conn.commit()
-        return {"message": "Student unassigned successfully"}
-        
-    except sqlite3.Error as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        conn.close()
-
-# Students endpoints
-@app.get("/api/v1/students")
-async def get_all_students(current_user: dict = Depends(get_current_user)):
-    """Get all students (for lecturers only)"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can access student list")
-    
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    try:
-        c.execute("""
-            SELECT id, username, email, first_name, last_name, created_at
-            FROM users 
-            WHERE role = 'student' AND is_active = 1
-            ORDER BY first_name, last_name
-        """)
-        
-        students = c.fetchall()
-        return [dict(student) for student in students]
-    except sqlite3.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        conn.close()
-
-# Submissions endpoints
-@app.get("/api/v1/submissions")
-async def get_submissions(current_user: dict = Depends(get_current_user)):
-    """Get all submissions for lecturer's folders"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can access submissions")
-    
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    try:
-        c.execute("""
-            SELECT s.*, f.name as folder_name, u.first_name, u.last_name, u.username
-            FROM submissions s
-            JOIN folders f ON s.folder_id = f.id
-            JOIN users u ON s.student_id = u.id
-            WHERE f.lecturer_id = ?
-            ORDER BY s.submitted_at DESC
-        """, (current_user["id"],))
-        
-        submissions = c.fetchall()
-        return [dict(sub) for sub in submissions]
-    except sqlite3.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        conn.close()
-
-@app.post("/api/v1/submissions/{submission_id}/grade")
-async def grade_submission(submission_id: int, grade: GradeSubmission, current_user: dict = Depends(get_current_user)):
-    """Grade a submission"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can grade submissions")
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    try:
-        # Verify submission belongs to lecturer's folder
-        c.execute("""
-            SELECT s.id 
-            FROM submissions s
-            JOIN folders f ON s.folder_id = f.id
-            WHERE s.id = ? AND f.lecturer_id = ?
-        """, (submission_id, current_user["id"]))
-        
-        if not c.fetchone():
-            raise HTTPException(status_code=404, detail="Submission not found")
-        
-        # Update submission with grade
-        c.execute("""
-            UPDATE submissions 
-            SET score = ?, feedback = ?, status = 'graded', graded_at = ?
-            WHERE id = ?
-        """, (grade.score, grade.feedback, now_iso(), submission_id))
-        
-        conn.commit()
-        return {"message": "Submission graded successfully"}
-        
-    except sqlite3.Error as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        conn.close()
-
-# SSH User Management Endpoints (Admin)
-@app.get("/api/v1/admin/ssh-users")
-def list_ssh_users():
-    """List all SSH users in the container"""
-    try:
-        from ssh_user_manager import SSHUserManager
-        manager = SSHUserManager()
-        result = manager.list_users()
-        return result
-    except Exception as e:
-        logger.error(f"Error listing SSH users: {e}")
-        raise HTTPException(500, f"Failed to list SSH users: {str(e)}")
-
-@app.post("/api/v1/admin/ssh-users/{username}")
-def create_ssh_user_admin(username: str, password: str):
-    """Manually create SSH user (admin endpoint)"""
-    try:
-        result = create_ssh_user_for_registration(username, password)
-        if not result["success"]:
-            raise HTTPException(400, result.get("error", "Failed to create SSH user"))
-        return result
-    except Exception as e:
-        logger.error(f"Error creating SSH user {username}: {e}")
-        raise HTTPException(500, f"Failed to create SSH user: {str(e)}")
-
-@app.delete("/api/v1/admin/ssh-users/{username}")
-def delete_ssh_user_admin(username: str):
-    """Delete SSH user (admin endpoint)"""
-    try:
-        from ssh_user_manager import SSHUserManager
-        manager = SSHUserManager()
-        result = manager.delete_user(username)
-        if not result["success"]:
-            raise HTTPException(400, result.get("error", "Failed to delete SSH user"))
-        return result
-    except Exception as e:
-        logger.error(f"Error deleting SSH user {username}: {e}")
-        raise HTTPException(500, f"Failed to delete SSH user: {str(e)}")
-
-# API endpoints for subjects
-@app.get("/api/v1/subjects")
-async def get_all_subjects(current_user: dict = Depends(get_current_user)):
-    """Get all subjects with enhanced error handling and debugging"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    try:
-        print(f"🔍 Getting subjects for user: {current_user['id']} ({current_user['role']})")
-        
-        # Get all subjects first for debugging
-        c.execute("""
-            SELECT s.id, s.code, s.name, s.lecturer_id, s.created_at,
-                   u.first_name, u.last_name, u.username as lecturer_username,
-                   u.is_active as lecturer_active
-            FROM subjects s
-            JOIN users u ON s.lecturer_id = u.id
-            ORDER BY s.code
-        """)
-        
-        all_subjects = c.fetchall()
-        
-        print(f"📊 Found {len(all_subjects)} total subjects in database:")
-        for subject in all_subjects:
-            print(f"  - {subject['code']}: {subject['name']} (Lecturer ID: {subject['lecturer_id']}, Active: {subject['lecturer_active']})")
-        
-        # Filter active subjects only
-        active_subjects = [dict(subject) for subject in all_subjects if subject['lecturer_active'] == 1]
-        
-        print(f"✅ Returning {len(active_subjects)} active subjects")
-        return active_subjects
-        
-    except sqlite3.Error as e:
-        print(f"❌ Database error getting subjects: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        print(f"❌ Unexpected error getting subjects: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
-    finally:
-        conn.close()
-
-# Enhanced folders endpoint with better debugging
-@app.get("/api/v1/folders")
-async def get_lecturer_folders(current_user: dict = Depends(get_current_user)):
-    """Get all folders created by the current lecturer with enhanced debugging"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can access folders")
-    
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    try:
-        print(f"🔍 Getting folders for lecturer: {current_user['id']} ({current_user['username']})")
-        
-        # First, check what subjects this lecturer has
-        c.execute("""
-            SELECT code, name FROM subjects WHERE lecturer_id = ?
-        """, (current_user["id"],))
-        lecturer_subjects = c.fetchall()
-        
-        print(f"📚 Lecturer has {len(lecturer_subjects)} subjects:")
-        for subject in lecturer_subjects:
-            print(f"  - {subject['code']}: {subject['name']}")
-        
-        # Get folders with assigned student count and subject info
-        c.execute("""
-            SELECT f.*, 
-                   s.name as subject_name,
-                   COUNT(fa.student_id) as assigned_students_count
-            FROM folders f
-            LEFT JOIN subjects s ON f.subject_code = s.code
-            LEFT JOIN folder_assignments fa ON f.id = fa.folder_id
-            WHERE f.lecturer_id = ?
-            GROUP BY f.id, f.name, f.description, f.due_date, f.max_points, f.status, 
-                     f.created_at, f.updated_at, f.lecturer_id, f.subject_code, s.name
-            ORDER BY f.created_at DESC
-        """, (current_user["id"],))
-        
-        folders = c.fetchall()
-        
-        print(f"📁 Found {len(folders)} folders for lecturer:")
-        for folder in folders:
-            print(f"  - {folder['name']} ({folder['subject_code']}) - {folder['assigned_students_count']} students")
-        
-        return [dict(folder) for folder in folders]
-        
-    except sqlite3.Error as e:
-        print(f"❌ Database error getting folders: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        conn.close()
-
-@app.post("/api/v1/folders")
-async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_current_user)):
-    """Create a new assignment folder with enhanced error handling"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can create folders")
-    
-    # Input validation
-    if not folder.name or not folder.name.strip():
-        raise HTTPException(status_code=400, detail="Assignment name is required")
-    
-    if not folder.subject_code or not folder.subject_code.strip():
-        raise HTTPException(status_code=400, detail="Subject code is required")
-    
-    if folder.max_points < 0:
-        raise HTTPException(status_code=400, detail="Maximum points must be non-negative")
-    
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    try:
-        # Start transaction
-        c.execute("BEGIN TRANSACTION")
-        
-        # Validate that subject exists and belongs to current lecturer
-        c.execute("""
-            SELECT id, name FROM subjects 
-            WHERE code = ? AND lecturer_id = ?
-        """, (folder.subject_code.strip(), current_user["id"]))
-        
-        subject_result = c.fetchone()
-        if not subject_result:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Subject '{folder.subject_code}' not found or not assigned to you"
-            )
-        
-        print(f"✅ Subject validation passed: {folder.subject_code} -> {subject_result['name']}")
-        
-        # Check for duplicate assignment names within the same subject
-        c.execute("""
-            SELECT id FROM folders 
-            WHERE name = ? AND subject_code = ? AND lecturer_id = ?
-        """, (folder.name.strip(), folder.subject_code.strip(), current_user["id"]))
-        
-        if c.fetchone():
-            raise HTTPException(
-                status_code=409, 
-                detail=f"Assignment '{folder.name}' already exists in subject {folder.subject_code}"
-            )
-        
-        # Create folder with enhanced data
-        now = now_iso()
-        c.execute("""
-            INSERT INTO folders (
-                name, description, due_date, max_points, status, 
-                created_at, updated_at, lecturer_id, subject_code
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            folder.name.strip(),
-            folder.description.strip() if folder.description else None,
-            folder.due_date,
-            folder.max_points,
-            folder.status,
-            now,
-            now,
-            current_user["id"],
-            folder.subject_code.strip()
-        ))
-        
-        folder_id = c.lastrowid
-        print(f"✅ Created folder with ID: {folder_id}")
-        
-        # Get all active students for automatic assignment
-        c.execute("SELECT id FROM users WHERE role = 'student' AND is_active = 1")
-        all_students = [row[0] for row in c.fetchall()]
-        
-        # Assign all students to the new assignment
-        if all_students:
-            for student_id in all_students:
+            if to_del:
+                placeholders = ",".join(["?"] * len(to_del))
+                c.execute(f"DELETE FROM folder_assignments WHERE folder_id = ? AND student_id IN ({placeholders})",
+                          (folder_id, *to_del))
+            for sid in to_add:
                 c.execute("""
-                    INSERT INTO folder_assignments (folder_id, student_id, assigned_at)
+                    INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
                     VALUES (?, ?, ?)
-                """, (folder_id, student_id, now))
-            
-            print(f"✅ Auto-assigned {len(all_students)} students to assignment '{folder.name}'")
-        
-        # Commit transaction
-        c.execute("COMMIT")
-        
-        # Return the complete created folder with all relationships
-        c.execute("""
-            SELECT f.*, 
-                   s.name as subject_name,
-                   COUNT(fa.student_id) as assigned_students_count
-            FROM folders f
-            JOIN subjects s ON f.subject_code = s.code
-            LEFT JOIN folder_assignments fa ON f.id = fa.folder_id
-            WHERE f.id = ?
-            GROUP BY f.id
-        """, (folder_id,))
-        
-        new_folder = dict(c.fetchone())
-        
-        print(f"✅ Assignment '{folder.name}' created successfully with {new_folder['assigned_students_count']} students assigned")
-        
-        return new_folder
-        
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        c.execute("ROLLBACK")
-        raise
-    except sqlite3.IntegrityError as e:
-        c.execute("ROLLBACK")
-        error_msg = str(e).lower()
-        if "unique constraint" in error_msg and "name" in error_msg:
-            raise HTTPException(status_code=409, detail="Assignment name already exists")
-        elif "foreign key constraint" in error_msg:
-            raise HTTPException(status_code=400, detail="Invalid subject or lecturer reference")
-        else:
-            raise HTTPException(status_code=500, detail=f"Database constraint error: {str(e)}")
-    except sqlite3.Error as e:
-        c.execute("ROLLBACK")
-        print(f"❌ Database error creating folder: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        c.execute("ROLLBACK")
-        print(f"❌ Unexpected error creating folder: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
-    finally:
-        conn.close()
+                """, (folder_id, sid, now_iso()))
 
-@app.put("/api/v1/folders/{folder_id}")
-async def update_folder(folder_id: int, folder: FolderUpdate, current_user: dict = Depends(get_current_user)):
-    """Update a folder with comprehensive validation and error handling"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can update folders")
-    
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    try:
-        # Start transaction
-        c.execute("BEGIN TRANSACTION")
-        
-        # Verify folder exists and belongs to current lecturer
+        conn.commit()
+
         c.execute("""
-            SELECT f.*, s.name as subject_name 
-            FROM folders f
-            JOIN subjects s ON f.subject_code = s.code
-            WHERE f.id = ? AND f.lecturer_id = ?
-        """, (folder_id, current_user["id"]))
-        
-        current_folder = c.fetchone()
-        if not current_folder:
-            raise HTTPException(status_code=404, detail="Assignment not found or access denied")
-        
-        current_folder = dict(current_folder)
-        print(f"✅ Found assignment to update: {current_folder['name']}")
-        
-        # Validate updated fields
-        update_fields = []
-        update_values = []
-        changes_made = []
-        
-        if folder.name is not None and folder.name.strip():
-            new_name = folder.name.strip()
-            if new_name != current_folder['name']:
-                # Check for duplicate names in same subject
-                c.execute("""
-                    SELECT id FROM folders 
-                    WHERE name = ? AND subject_code = ? AND lecturer_id = ? AND id != ?
-                """, (new_name, current_folder['subject_code'], current_user["id"], folder_id))
-                
-                if c.fetchone():
-                    raise HTTPException(
-                        status_code=409, 
-                        detail=f"Assignment '{new_name}' already exists in this subject"
-                    )
-                
-                update_fields.append("name = ?")
-                update_values.append(new_name)
-                changes_made.append(f"name: '{current_folder['name']}' → '{new_name}'")
-        
-        if folder.description is not None:
-            new_desc = folder.description.strip() if folder.description else None
-            if new_desc != current_folder.get('description'):
-                update_fields.append("description = ?")
-                update_values.append(new_desc)
-                changes_made.append(f"description updated")
-        
-        if folder.due_date is not None:
-            if folder.due_date != current_folder.get('due_date'):
-                update_fields.append("due_date = ?")
-                update_values.append(folder.due_date if folder.due_date else None)
-                changes_made.append(f"due date updated")
-        
-        if folder.max_points is not None:
-            if folder.max_points < 0:
-                raise HTTPException(status_code=400, detail="Maximum points cannot be negative")
-            if folder.max_points != current_folder['max_points']:
-                update_fields.append("max_points = ?")
-                update_values.append(folder.max_points)
-                changes_made.append(f"max points: {current_folder['max_points']} → {folder.max_points}")
-        
-        if folder.status is not None:
-            valid_statuses = ['draft', 'published', 'closed']
-            if folder.status not in valid_statuses:
-                raise HTTPException(status_code=400, detail=f"Status must be one of: {valid_statuses}")
-            if folder.status != current_folder['status']:
-                update_fields.append("status = ?")
-                update_values.append(folder.status)
-                changes_made.append(f"status: '{current_folder['status']}' → '{folder.status}'")
-        
-        # Update folder if there are changes
-        if update_fields:
-            update_fields.append("updated_at = ?")
-            update_values.append(now_iso())
-            update_values.append(folder_id)
-            
-            c.execute(f"UPDATE folders SET {', '.join(update_fields)} WHERE id = ?", update_values)
-            print(f"✅ Updated folder fields: {', '.join(changes_made)}")
-        
-        # Update student assignments if provided
-        if folder.student_ids is not None:
-            # Get current assignments
-            c.execute("SELECT student_id FROM folder_assignments WHERE folder_id = ?", (folder_id,))
-            current_students = {row[0] for row in c.fetchall()}
-            new_students = set(folder.student_ids)
-            
-            # Students to add
-            to_add = new_students - current_students
-            # Students to remove
-            to_remove = current_students - new_students
-            
-            if to_remove:
-                c.execute(f"""
-                    DELETE FROM folder_assignments 
-                    WHERE folder_id = ? AND student_id IN ({','.join(['?' for _ in to_remove])})
-                """, [folder_id] + list(to_remove))
-                print(f"✅ Removed {len(to_remove)} student assignments")
-            
-            if to_add:
-                # Validate that all student IDs exist and are active
-                if to_add:
-                    placeholders = ','.join(['?' for _ in to_add])
-                    c.execute(f"""
-                        SELECT id FROM users 
-                        WHERE id IN ({placeholders}) AND role = 'student' AND is_active = 1
-                    """, list(to_add))
-                    valid_students = {row[0] for row in c.fetchall()}
-                    invalid_students = to_add - valid_students
-                    
-                    if invalid_students:
-                        raise HTTPException(
-                            status_code=400, 
-                            detail=f"Invalid student IDs: {list(invalid_students)}"
-                        )
-                
-                # Add new assignments
-                assign_time = now_iso()
-                for student_id in to_add:
-                    c.execute("""
-                        INSERT INTO folder_assignments (folder_id, student_id, assigned_at)
-                        VALUES (?, ?, ?)
-                    """, (folder_id, student_id, assign_time))
-                print(f"✅ Added {len(to_add)} student assignments")
-            
-            if to_add or to_remove:
-                changes_made.append(f"student assignments: +{len(to_add)}, -{len(to_remove)}")
-        
-        # Commit transaction
-        c.execute("COMMIT")
-        
-        # Return updated folder with full details
-        c.execute("""
-            SELECT f.*, 
-                   s.name as subject_name,
-                   COUNT(fa.student_id) as assigned_students_count
-            FROM folders f
-            JOIN subjects s ON f.subject_code = s.code
-            LEFT JOIN folder_assignments fa ON f.id = fa.folder_id
-            WHERE f.id = ?
-            GROUP BY f.id
+            SELECT id, name, description, due_date, max_points, status,
+                   created_at, updated_at, lecturer_id, subject_code
+            FROM folders WHERE id = ?
         """, (folder_id,))
-        
-        updated_folder = dict(c.fetchone())
-        
-        if changes_made:
-            print(f"✅ Assignment '{updated_folder['name']}' updated successfully. Changes: {'; '.join(changes_made)}")
-        else:
-            print(f"✅ No changes made to assignment '{updated_folder['name']}'")
-        
-        return updated_folder
-        
+        row = c.fetchone()
+        return dict(row)
     except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        c.execute("ROLLBACK")
+        conn.rollback()
         raise
-    except sqlite3.IntegrityError as e:
-        c.execute("ROLLBACK")
-        error_msg = str(e).lower()
-        if "unique constraint" in error_msg and "name" in error_msg:
-            raise HTTPException(status_code=409, detail="Assignment name already exists in this subject")
-        elif "foreign key constraint" in error_msg:
-            raise HTTPException(status_code=400, detail="Invalid reference in assignment data")
-        else:
-            raise HTTPException(status_code=500, detail=f"Database constraint error: {str(e)}")
     except sqlite3.Error as e:
-        c.execute("ROLLBACK")
-        print(f"❌ Database error updating folder {folder_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        c.execute("ROLLBACK")
-        print(f"❌ Unexpected error updating folder {folder_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+        conn.rollback()
+        raise HTTPException(500, f"Database error: {str(e)}")
     finally:
         conn.close()
 
 @app.delete("/api/v1/folders/{folder_id}")
-async def delete_folder(folder_id: int, current_user: dict = Depends(get_current_user)):
-    """Delete a folder and its assignments"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can delete folders")
-    
+def delete_folder(folder_id: int, current_user: dict = Depends(get_current_user)):
+    """Delete an assignment (folder), its submissions and related file blobs."""
+    _ensure_lecturer(current_user)
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
     try:
-        # Verify folder belongs to current lecturer
-        c.execute("SELECT lecturer_id FROM folders WHERE id = ?", (folder_id,))
-        result = c.fetchone()
-        if not result or result[0] != current_user["id"]:
-            raise HTTPException(status_code=404, detail="Folder not found")
-        
-        # Delete folder assignments first (foreign key constraint)
+        _ensure_folder_owner(c, folder_id, current_user["id"])
+
+        # Collect submission file ids to delete file blobs
+        c.execute("SELECT id, file_ids FROM submissions WHERE folder_id = ?", (folder_id,))
+        subs = _dict_rows(c)
+        file_ids = []
+        for s in subs:
+            try:
+                file_ids.extend(json.loads(s.get("file_ids") or "[]"))
+            except Exception:
+                pass
+
+        # Delete submissions
+        c.execute("DELETE FROM submissions WHERE folder_id = ?", (folder_id,))
+        # Delete assigned students
         c.execute("DELETE FROM folder_assignments WHERE folder_id = ?", (folder_id,))
-        
-        # Delete folder
+        # Delete files referenced by those submissions
+        if file_ids:
+            placeholders = ",".join(["?"] * len(file_ids))
+            c.execute(f"DELETE FROM files WHERE id IN ({placeholders})", file_ids)
+        # Finally delete the folder
         c.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
-        
+
         conn.commit()
-        return {"message": "Folder deleted successfully"}
-        
+        return {"deleted": True}
+    except HTTPException:
+        conn.rollback()
+        raise
     except sqlite3.Error as e:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(500, f"Database error: {str(e)}")
     finally:
         conn.close()
 
-# Additional endpoints for assignment management
 @app.get("/api/v1/folders/{folder_id}/assignments")
-async def get_folder_assignments(folder_id: int, current_user: dict = Depends(get_current_user)):
-    """Get all student assignments for a specific folder with enhanced details"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can access folder assignments")
-    
+def list_folder_assignments(folder_id: int, current_user: dict = Depends(get_current_user)):
+    """Return assigned students for a given folder (lecturer must own)."""
+    _ensure_lecturer(current_user)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
     try:
-        # Verify folder belongs to current lecturer
-        c.execute("SELECT lecturer_id, name FROM folders WHERE id = ?", (folder_id,))
-        result = c.fetchone()
-        if not result or result[0] != current_user["id"]:
-            raise HTTPException(status_code=404, detail="Assignment not found or access denied")
-        
-        # Get all students with their assignment status and submission info
+        _ensure_folder_owner(c, folder_id, current_user["id"])
+        # Return only assigned students with is_assigned flag (UI only needs IDs)
         c.execute("""
-            SELECT u.id, u.username, u.first_name, u.last_name, u.email,
-                   fa.assigned_at,
-                   CASE WHEN fa.student_id IS NOT NULL THEN 1 ELSE 0 END as is_assigned,
-                   s.submitted_at, s.status as submission_status, s.score
+            SELECT u.id, 1 AS is_assigned
             FROM users u
-            LEFT JOIN folder_assignments fa ON u.id = fa.student_id AND fa.folder_id = ?
-            LEFT JOIN submissions s ON u.id = s.student_id AND s.folder_id = ?
-            WHERE u.role = 'student' AND u.is_active = 1
-            ORDER BY u.first_name, u.last_name
-        """, (folder_id, folder_id))
-        
-        assignments = c.fetchall()
-        return [dict(assignment) for assignment in assignments]
-        
-    except sqlite3.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+            JOIN folder_assignments fa ON fa.student_id = u.id
+            WHERE fa.folder_id = ? AND u.role = 'student' AND u.is_active = 1
+        """, (folder_id,))
+        return _dict_rows(c)
     finally:
         conn.close()
 
-@app.delete("/api/v1/folders/{folder_id}/assign/{student_id}")
-async def unassign_student_from_folder(folder_id: int, student_id: int, current_user: dict = Depends(get_current_user)):
-    """Unassign a student from a folder"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can unassign students")
-    
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    try:
-        # Verify folder belongs to current lecturer
-        c.execute("SELECT lecturer_id FROM folders WHERE id = ?", (folder_id,))
-        result = c.fetchone()
-        if not result or result[0] != current_user["id"]:
-            raise HTTPException(status_code=404, detail="Folder not found")
-        
-        # Unassign student from folder
-        c.execute("""
-            DELETE FROM folder_assignments 
-            WHERE folder_id = ? AND student_id = ?
-        """, (folder_id, student_id))
-        
-        if c.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Student assignment not found")
-        
-        conn.commit()
-        return {"message": "Student unassigned successfully"}
-        
-    except sqlite3.Error as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        conn.close()
-
-# Students endpoints
-@app.get("/api/v1/students")
-async def get_all_students(current_user: dict = Depends(get_current_user)):
-    """Get all students (for lecturers only)"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can access student list")
-    
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    try:
-        c.execute("""
-            SELECT id, username, email, first_name, last_name, created_at
-            FROM users 
-            WHERE role = 'student' AND is_active = 1
-            ORDER BY first_name, last_name
-        """)
-        
-        students = c.fetchall()
-        return [dict(student) for student in students]
-    except sqlite3.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        conn.close()
-
-# Submissions endpoints
 @app.get("/api/v1/submissions")
-async def get_submissions(current_user: dict = Depends(get_current_user)):
-    """Get all submissions for lecturer's folders"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can access submissions")
-    
+def list_submissions(current_user: dict = Depends(get_current_user)):
+    """List submissions for folders owned by the current lecturer (includes student names)."""
+    _ensure_lecturer(current_user)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
     try:
         c.execute("""
-            SELECT s.*, f.name as folder_name, u.first_name, u.last_name, u.username
+            SELECT s.id, s.folder_id, s.student_id, s.submitted_at, s.score, s.feedback,
+                   s.status, s.graded_at, s.revisions, s.file_ids,
+                   u.first_name, u.last_name, u.username, f.name AS folder_name
             FROM submissions s
-            JOIN folders f ON s.folder_id = f.id
-            JOIN users u ON s.student_id = u.id
+            JOIN users u ON u.id = s.student_id
+            JOIN folders f ON f.id = s.folder_id
             WHERE f.lecturer_id = ?
             ORDER BY s.submitted_at DESC
         """, (current_user["id"],))
-        
-        submissions = c.fetchall()
-        return [dict(sub) for sub in submissions]
-    except sqlite3.Error as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        rows = _dict_rows(c)
+        # Normalize file_ids into list
+        for r in rows:
+            try:
+                r["file_ids"] = json.loads(r.get("file_ids") or "[]")
+            except Exception:
+                r["file_ids"] = []
+        return rows
     finally:
         conn.close()
 
-@app.post("/api/v1/submissions/{submission_id}/grade")
-async def grade_submission(submission_id: int, grade: GradeSubmission, current_user: dict = Depends(get_current_user)):
-    """Grade a submission"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can grade submissions")
-    
+# ------------------------------
+# Student-specific endpoints
+# ------------------------------
+@app.get("/api/v1/student/subjects")
+def get_student_subjects(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "student":
+        raise HTTPException(status_code=403, detail="Only students can access their subjects")
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
     try:
-        # Verify submission belongs to lecturer's folder
         c.execute("""
-            SELECT s.id 
-            FROM submissions s
-            JOIN folders f ON s.folder_id = f.id
-            WHERE s.id = ? AND f.lecturer_id = ?
-        """, (submission_id, current_user["id"]))
-        
-        if not c.fetchone():
-            raise HTTPException(status_code=404, detail="Submission not found")
-        
-        # Update submission with grade
+            SELECT DISTINCT s.id, s.code, s.name, s.lecturer_id, s.created_at
+            FROM subjects s
+            JOIN folders f ON f.subject_code = s.code
+            JOIN folder_assignments fa ON fa.folder_id = f.id
+            WHERE fa.student_id = ?
+              AND LOWER(f.status) IN ('published','active')
+            ORDER BY s.code
+        """, (current_user["id"],))
+        rows = c.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+@app.get("/api/v1/student/folders")
+def get_student_folders(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "student":
+        raise HTTPException(status_code=403, detail="Only students can access their folders")
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        # Only folders assigned to this student and visible (published/active)
         c.execute("""
-            UPDATE submissions 
-            SET score = ?, feedback = ?, status = 'graded', graded_at = ?
-            WHERE id = ?
-        """, (grade.score, grade.feedback, now_iso(), submission_id))
-        
+            SELECT f.*
+            FROM folders f
+            JOIN folder_assignments fa ON fa.folder_id = f.id
+            WHERE fa.student_id = ?
+              AND LOWER(f.status) IN ('published','active')
+            ORDER BY COALESCE(f.due_date, f.created_at) ASC
+        """, (current_user["id"],))
+        rows = c.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+# New: list my submissions (with file names, no content)
+@app.get("/api/v1/student/submissions")
+def get_my_submissions(folder_id: Optional[int] = None, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "student":
+        raise HTTPException(status_code=403, detail="Only students can access their submissions")
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        params = [current_user["id"]]
+        sql = """
+            SELECT id, folder_id, student_id, submitted_at, score, feedback, status, graded_at, revisions, file_ids
+            FROM submissions
+            WHERE student_id = ?
+        """
+        if folder_id is not None:
+            sql += " AND folder_id = ?"
+            params.append(folder_id)
+        sql += " ORDER BY submitted_at DESC"
+        c.execute(sql, params)
+        rows = [dict(r) for r in c.fetchall()]
+        # Hydrate files (names only)
+        for r in rows:
+            file_ids = []
+            try:
+                file_ids = json.loads(r.get("file_ids") or "[]")
+            except Exception:
+                file_ids = []
+            r["file_ids"] = file_ids
+            r["files"] = []
+            if file_ids:
+                placeholders = ",".join(["?"] * len(file_ids))
+                c.execute(f"SELECT id, name FROM files WHERE id IN ({placeholders})", file_ids)
+                r["files"] = [dict(x) for x in c.fetchall()]
+        return rows
+    finally:
+        conn.close()
+
+# New: create/append a submission with uploaded files
+@app.post("/api/v1/student/submissions")
+def create_or_update_submission(payload: StudentSubmissionCreate, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "student":
+        raise HTTPException(status_code=403, detail="Only students can submit")
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        # Verify folder is assigned to this student and active
+        c.execute("""
+          SELECT f.id, f.status
+          FROM folders f
+          JOIN folder_assignments fa ON fa.folder_id = f.id
+          WHERE f.id = ? AND fa.student_id = ?
+        """, (payload.folder_id, current_user["id"]))
+        frow = c.fetchone()
+        if not frow:
+          raise HTTPException(403, "You are not assigned to this assignment")
+        status = (frow["status"] or "").lower()
+        if status not in ("published", "active"):
+          raise HTTPException(400, "Assignment is not open for submissions")
+
+        now = now_iso()
+        # Insert files
+        new_file_ids = []
+        for fl in payload.files:
+            try:
+                content_b64 = fl.content
+                if "," in content_b64:
+                    content_b64 = content_b64.split(",", 1)[1]
+                blob = base64.b64decode(content_b64)
+            except Exception:
+                raise HTTPException(400, "Invalid file content encoding")
+            c.execute("""
+              INSERT INTO files (name, type, size, content, uploaded_at, uploaded_by)
+              VALUES (?, ?, ?, ?, ?, ?)
+            """, (fl.name, fl.type or "application/octet-stream", fl.size or len(blob), sqlite3.Binary(blob), now, current_user["id"]))
+            new_file_ids.append(c.lastrowid)
+
+        # Find existing submission
+        c.execute("""
+          SELECT id, file_ids, revisions FROM submissions
+          WHERE folder_id = ? AND student_id = ?
+          ORDER BY id DESC LIMIT 1
+        """, (payload.folder_id, current_user["id"]))
+        srow = c.fetchone()
+
+        if srow:
+            existing_ids = []
+            try:
+                existing_ids = json.loads(srow["file_ids"] or "[]")
+            except Exception:
+                existing_ids = []
+            merged = existing_ids + new_file_ids
+            c.execute("""
+              UPDATE submissions
+              SET submitted_at = ?, status = 'submitted', file_ids = ?, revisions = ?
+              WHERE id = ?
+            """, (now, json.dumps(merged), int(srow["revisions"] or 1) + 1, srow["id"]))
+            submission_id = srow["id"]
+            file_ids_out = merged
+        else:
+            c.execute("""
+              INSERT INTO submissions (folder_id, student_id, submitted_at, status, revisions, file_ids)
+              VALUES (?, ?, ?, 'submitted', 1, ?)
+            """, (payload.folder_id, current_user["id"], now, json.dumps(new_file_ids)))
+            submission_id = c.lastrowid
+            file_ids_out = new_file_ids
+
+        # Return submission with file names
+        files_meta = []
+        if file_ids_out:
+            placeholders = ",".join(["?"] * len(file_ids_out))
+            c.execute(f"SELECT id, name FROM files WHERE id IN ({placeholders})", file_ids_out)
+            files_meta = [dict(x) for x in c.fetchall()]
         conn.commit()
-        return {"message": "Submission graded successfully"}
-        
+        return {
+            "id": submission_id,
+            "folder_id": payload.folder_id,
+            "student_id": current_user["id"],
+            "submitted_at": now,
+            "status": "submitted",
+            "revisions": len(file_ids_out),  # simple indicator
+            "file_ids": file_ids_out,
+            "files": files_meta
+        }
+    except HTTPException:
+        conn.rollback()
+        raise
     except sqlite3.Error as e:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(500, f"Database error: {str(e)}")
     finally:
         conn.close()
 
-# SSH User Management Endpoints (Admin)
-@app.get("/api/v1/admin/ssh-users")
-def list_ssh_users():
-    """List all SSH users in the container"""
-    try:
-        from ssh_user_manager import SSHUserManager
-        manager = SSHUserManager()
-        result = manager.list_users()
-        return result
-    except Exception as e:
-        logger.error(f"Error listing SSH users: {e}")
-        raise HTTPException(500, f"Failed to list SSH users: {str(e)}")
-
-@app.post("/api/v1/admin/ssh-users/{username}")
-def create_ssh_user_admin(username: str, password: str):
-    """Manually create SSH user (admin endpoint)"""
-    try:
-        result = create_ssh_user_for_registration(username, password)
-        if not result["success"]:
-            raise HTTPException(400, result.get("error", "Failed to create SSH user"))
-        return result
-    except Exception as e:
-        logger.error(f"Error creating SSH user {username}: {e}")
-        raise HTTPException(500, f"Failed to create SSH user: {str(e)}")
-
-@app.delete("/api/v1/admin/ssh-users/{username}")
-def delete_ssh_user_admin(username: str):
-    """Delete SSH user (admin endpoint)"""
-    try:
-        from ssh_user_manager import SSHUserManager
-        manager = SSHUserManager()
-        result = manager.delete_user(username)
-        if not result["success"]:
-            raise HTTPException(400, result.get("error", "Failed to delete SSH user"))
-        return result
-    except Exception as e:
-        logger.error(f"Error deleting SSH user {username}: {e}")
-        raise HTTPException(500, f"Failed to delete SSH user: {str(e)}")
-
-# API endpoints for subjects
-@app.get("/api/v1/subjects")
-async def get_all_subjects(current_user: dict = Depends(get_current_user)):
-    """Get all subjects with enhanced error handling and debugging"""
+# New: download a file (returns JSON with base64 content)
+@app.get("/api/v1/files/{file_id}")
+def get_file(file_id: int, current_user: dict = Depends(get_current_user)):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
     try:
-        print(f"🔍 Getting subjects for user: {current_user['id']} ({current_user['role']})")
-        
-        # Get all subjects first for debugging
-        c.execute("""
-            SELECT s.id, s.code, s.name, s.lecturer_id, s.created_at,
-                   u.first_name, u.last_name, u.username as lecturer_username,
-                   u.is_active as lecturer_active
-            FROM subjects s
-            JOIN users u ON s.lecturer_id = u.id
-            ORDER BY s.code
-        """)
-        
-        all_subjects = c.fetchall()
-        
-        print(f"📊 Found {len(all_subjects)} total subjects in database:")
-        for subject in all_subjects:
-            print(f"  - {subject['code']}: {subject['name']} (Lecturer ID: {subject['lecturer_id']}, Active: {subject['lecturer_active']})")
-        
-        # Filter active subjects only
-        active_subjects = [dict(subject) for subject in all_subjects if subject['lecturer_active'] == 1]
-        
-        print(f"✅ Returning {len(active_subjects)} active subjects")
-        return active_subjects
-        
+        c.execute("SELECT id, name, type, size, content, uploaded_by FROM files WHERE id = ?", (file_id,))
+        r = c.fetchone()
+        if not r:
+            raise HTTPException(404, "File not found")
+        r = dict(r)
+        # Security: allow owner or lecturers
+        if current_user["role"] != "lecturer" and current_user["id"] != r["uploaded_by"]:
+            raise HTTPException(403, "Forbidden")
+        content_b64 = base64.b64encode(r["content"]).decode("utf-8")
+        return {"id": r["id"], "name": r["name"], "type": r["type"], "size": r["size"], "content": content_b64}
+    except HTTPException:
+        raise
     except sqlite3.Error as e:
-        print(f"❌ Database error getting subjects: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        print(f"❌ Unexpected error getting subjects: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+        raise HTTPException(500, f"Database error: {str(e)}")
     finally:
         conn.close()
-
-# Enhanced folders endpoint with better debugging
-@app.get("/api/v1/folders")
-async def get_lecturer_folders(current_user: dict = Depends(get_current_user)):
-    """Get all folders created by the current lecturer with enhanced debugging"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can access folders")
-    
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    try:
-        print(f"🔍 Getting folders for lecturer: {current_user['id']} ({current_user['username']})")
-        
-        # First, check what subjects this lecturer has
-        c.execute("""
-            SELECT code, name FROM subjects WHERE lecturer_id = ?
-        """, (current_user["id"],))
-        lecturer_subjects = c.fetchall()
-        
-        print(f"📚 Lecturer has {len(lecturer_subjects)} subjects:")
-        for subject in lecturer_subjects:
-            print(f"  - {subject['code']}: {subject['name']}")
-        
-        # Get folders with assigned student count and subject info
-        c.execute("""
-            SELECT f.*, 
-                   s.name as subject_name,
-                   COUNT(fa.student_id) as assigned_students_count
-            FROM folders f
-            LEFT JOIN subjects s ON f.subject_code = s.code
-            LEFT JOIN folder_assignments fa ON f.id = fa.folder_id
-            WHERE f.lecturer_id = ?
-            GROUP BY f.id, f.name, f.description, f.due_date, f.max_points, f.status, 
-                     f.created_at, f.updated_at, f.lecturer_id, f.subject_code, s.name
-            ORDER BY f.created_at DESC
-        """, (current_user["id"],))
-        
-        folders = c.fetchall()
-        
-        print(f"📁 Found {len(folders)} folders for lecturer:")
-        for folder in folders:
-            print(f"  - {folder['name']} ({folder['subject_code']}) - {folder['assigned_students_count']} students")
-        
-        return [dict(folder) for folder in folders]
-        
-    except sqlite3.Error as e:
-        print(f"❌ Database error getting folders: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        conn.close()
-
-@app.post("/api/v1/folders")
-async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_current_user)):
-    """Create a new assignment folder with enhanced error handling"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can create folders")
-    
-    # Input validation
-    if not folder.name or not folder.name.strip():
-        raise HTTPException(status_code=400, detail="Assignment name is required")
