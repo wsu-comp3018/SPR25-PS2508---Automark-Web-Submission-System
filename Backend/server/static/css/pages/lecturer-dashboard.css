@@ -1,4 +1,4 @@
-:root{
+ :root{
       --primary:#667eea;
       --accent:#764ba2;
       --bg:#f4f6f8;
@@ -29,6 +29,8 @@
     .folder{padding:10px;border-radius:8px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid #f0f0f0;transition:all 0.2s}
     .folder:hover{border-color:#ddd;background:#fafafa}
     .folder.expanded{background:#f8f9ff;border-color:var(--primary)}
+    .folder.subject-folder{background:#f0f8ff;border:2px solid var(--primary);font-weight:600}
+    .folder.subject-folder:hover{background:#e6f2ff}
     .folder .left{display:flex;gap:8px;align-items:center;flex:1}
     .folder .name{font-weight:600}
     .folder .meta{font-size:12px;color:var(--muted)}
@@ -90,6 +92,8 @@
     .file-size{font-size:11px;color:var(--muted);margin-left:8px}
     .grade-badge{background:#e8f5e8;color:#27ae60;padding:2px 6px;border-radius:4px;font-size:11px;text-transform:uppercase}
     .grading-form{margin-top:12px;padding-top:12px;border-top:1px solid #eee}
+    .hidden{display:none!important}
+    .create-assignment-section{display:none}
     @media (max-width:1024px){.layout{grid-template-columns:1fr}}
     @media (max-width:768px){
       body{padding:10px}
