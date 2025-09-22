@@ -60,3 +60,13 @@ Dockerfile
 # Documentation
 README.md
 *.md
+
+# Local app data (don't bake into the image)
+uploads/
+data/
+logs/
+
+# Helper artifacts (from Makefile)
+.lect_token
+.stud_token
+.submission_resp.json

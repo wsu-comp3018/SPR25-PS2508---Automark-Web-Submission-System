@@ -3,14 +3,13 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Install system dependencies (curl for healthcheck; gcc only if needed by some wheels)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Docker CLI for SSH user management
-RUN apt-get update && apt-get install -y docker.io && rm -rf /var/lib/apt/lists/*
+# No Docker CLI inside; we use the Python Docker SDK + mounted /var/run/docker.sock
 
 # Copy requirements first for better caching
 COPY requirements.txt .

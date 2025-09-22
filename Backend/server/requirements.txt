@@ -1,4 +1,4 @@
 fastapi
 uvicorn[standard]
 pydantic[email]
-
+docker>=7,<8
