@@ -7,9 +7,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
-
-# No Docker CLI inside; we use the Python Docker SDK + mounted /var/run/docker.sock
 
 # Copy requirements first for better caching
 COPY requirements.txt .
