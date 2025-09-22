@@ -1029,7 +1029,6 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     try:
-        # Create folder
         now = now_iso()
         c.execute("""
             INSERT INTO folders (name, description, due_date, max_points, status,
@@ -1078,6 +1077,7 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
         raise HTTPException(500, f"Database error: {str(e)}")
     finally:
         conn.close()
+
 
 @app.put("/api/v1/folders/{folder_id}")
 def update_folder(folder_id: int, payload: FolderUpdate, current_user: dict = Depends(get_current_user)):
