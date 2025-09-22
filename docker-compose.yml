@@ -25,6 +25,8 @@ services:
       - automark-submissions:/app/shared/submissions
     networks:
       - automark-network
+    depends_on:
+      - automark-ssh
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -50,7 +52,32 @@ services:
     environment:
       - TZ=Australia/Sydney
     healthcheck:
-      test: ["CMD", "systemctl", "is-active", "ssh"]
+      test: ["CMD-SHELL", "pgrep -x sshd >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # SVN Server for Assignment Templates and Submission Collection
+  automark-svn:
+    build:
+      context: ./SVN
+      dockerfile: Dockerfile
+    container_name: automark-svn
+    ports:
+      - "3690:3690"  # SVN protocol port
+    volumes:
+      # SVN repositories
+      - automark-svn-repos:/var/svn
+      # Shared access to collect submissions
+      - automark-submissions:/var/submissions
+    networks:
+      - automark-network
+    restart: unless-stopped
+    environment:
+      - TZ=Australia/Sydney
+    healthcheck:
+      test: ["CMD", "svnserve", "--version"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -83,6 +110,8 @@ volumes:
   automark-uploads:
     driver: local
   automark-submissions:
+    driver: local
+  automark-svn-repos:
     driver: local
 
 networks:

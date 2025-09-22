@@ -1,4 +1,41 @@
-.venv/
-automark.db
+# Python
 __pycache__/
-**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments & local env files
+.venv/
+venv/
+.env
+.env.*
+
+# Databases & local uploads
+automark.db
+*.db
+Backend/server/automark.db
+Backend/server/uploads/
+uploads/
+
+# Build / cache
+dist/
+build/
+*.egg-info/
+
+# OS & editor files
+.DS_Store
+.AppleDouble
+.LSOverride
+.idea/
+.vscode/
+*.swp
+
+# Local helper artifacts (from Makefile)
+Backend/server/.lect_token
+Backend/server/.stud_token
+Backend/server/.submission_resp.json
+
+# Logs
+logs/
+*.log
