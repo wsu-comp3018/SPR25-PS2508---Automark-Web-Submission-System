@@ -1,6 +1,12 @@
 FROM ubuntu:latest
 
+
 ENV DEBIAN_FRONTEND=noninteractive TZ=Australia/Sydney
+RUN apt-get update && apt-get install -y \
+    openssh-server \
+    subversion \
+    nano \
+    && rm -rf /var/lib/apt/lists/*
 
 # openssh + tzdata for timezone; procps for `pgrep` (compose healthcheck); certs for good measure
 RUN apt-get update && apt-get install -y --no-install-recommends \

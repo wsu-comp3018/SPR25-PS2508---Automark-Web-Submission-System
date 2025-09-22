@@ -160,6 +160,46 @@ def init_db():
             )
         """)
         
+        print("📝 INIT_DB: Creating subject_enrollments table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS subject_enrollments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id INTEGER NOT NULL,
+                subject_id INTEGER NOT NULL,
+                enrolled_at TEXT NOT NULL,
+                semester TEXT NOT NULL CHECK(semester IN ('AUT','SPR')),
+                year INTEGER NOT NULL,
+                status TEXT DEFAULT 'active' CHECK(status IN ('active','dropped','completed')),
+                FOREIGN KEY (student_id) REFERENCES users(id),
+                FOREIGN KEY (subject_id) REFERENCES subjects(id),
+                UNIQUE(student_id, subject_id, semester, year)
+            )
+        """)
+        
+        print("📝 INIT_DB: Creating assignment_templates table...")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS assignment_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                semester TEXT NOT NULL CHECK(semester IN ('AUT','SPR')),
+                year INTEGER NOT NULL,
+                assignment_number INTEGER NOT NULL,
+                template_files TEXT,  -- JSON string of template files
+                svn_path TEXT,  -- SVN repository path
+                due_date TEXT,
+                max_points INTEGER DEFAULT 100,
+                status TEXT DEFAULT 'draft' CHECK(status IN ('draft','published','archived')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                created_by INTEGER NOT NULL,
+                FOREIGN KEY (subject_id) REFERENCES subjects(id),
+                FOREIGN KEY (created_by) REFERENCES users(id),
+                UNIQUE(subject_id, semester, year, assignment_number)
+            )
+        """)
+        
         print("👨‍🏫 INIT_DB: Creating hardcoded lecturers...")
         
         # Hardcoded lecturer information
@@ -365,6 +405,36 @@ class SubjectCreate(BaseModel):
     code: str
     name: str
     lecturer_id: int
+
+class SubjectEnrollment(BaseModel):
+    student_id: int
+    subject_id: int
+    semester: str  # 'AUT' or 'SPR'
+    year: int = 2025
+
+class EnrollmentCreate(BaseModel):
+    subject_code: str
+    semester: str  # 'AUT' or 'SPR'
+    year: int = 2025
+
+class AssignmentTemplateCreate(BaseModel):
+    subject_id: int
+    name: str
+    description: Optional[str] = None
+    semester: str  # 'AUT' or 'SPR'
+    year: int = 2025
+    assignment_number: int
+    due_date: Optional[str] = None
+    max_points: int = 100
+    template_files: Optional[Dict] = None  # JSON structure of template files
+
+class AssignmentTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    due_date: Optional[str] = None
+    max_points: Optional[int] = None
+    status: Optional[str] = None
+    template_files: Optional[Dict] = None
 
 @app.get("/")
 async def serverIndex():
@@ -1074,6 +1144,710 @@ def get_submission(submission_id: int, current_user: dict = Depends(get_current_
             if not owner or owner[0] != current_user["id"]:
                 raise HTTPException(403, "Forbidden")
         return sub
+    finally:
+        conn.close()
+
+# API endpoints for assignment templates
+@app.get("/api/v1/assignment-templates")
+async def get_assignment_templates(current_user: dict = Depends(get_current_user)):
+    """Get assignment templates for current lecturer"""
+    if current_user["role"] != "lecturer":
+        raise HTTPException(status_code=403, detail="Only lecturers can view assignment templates")
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        c.execute("""
+            SELECT at.*, s.code as subject_code, s.name as subject_name
+            FROM assignment_templates at
+            JOIN subjects s ON at.subject_id = s.id
+            WHERE s.lecturer_id = ?
+            ORDER BY at.year DESC, at.semester, s.code, at.assignment_number
+        """, (current_user["id"],))
+        
+        templates = c.fetchall()
+        return [dict(template) for template in templates]
+        
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+@app.post("/api/v1/assignment-templates")
+async def create_assignment_template(template: AssignmentTemplateCreate, current_user: dict = Depends(get_current_user)):
+    """Create a new assignment template"""
+    if current_user["role"] != "lecturer":
+        raise HTTPException(status_code=403, detail="Only lecturers can create assignment templates")
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        # Verify lecturer teaches this subject
+        c.execute("SELECT lecturer_id FROM subjects WHERE id = ?", (template.subject_id,))
+        subject_result = c.fetchone()
+        if not subject_result or subject_result[0] != current_user["id"]:
+            raise HTTPException(status_code=403, detail="You don't teach this subject")
+        
+        # Get subject info
+        c.execute("SELECT code, name FROM subjects WHERE id = ?", (template.subject_id,))
+        subject_info = c.fetchone()
+        subject_code, subject_name = subject_info
+        
+        # Generate SVN path
+        svn_path = f"templates/{template.year}-{template.semester}-{subject_code}-Assignment{template.assignment_number}"
+        
+        # Create template
+        now = now_iso()
+        c.execute("""
+            INSERT INTO assignment_templates 
+            (subject_id, name, description, semester, year, assignment_number, template_files, 
+             svn_path, due_date, max_points, status, created_at, updated_at, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)
+        """, (
+            template.subject_id,
+            template.name,
+            template.description,
+            template.semester,
+            template.year,
+            template.assignment_number,
+            json.dumps(template.template_files) if template.template_files else None,
+            svn_path,
+            template.due_date,
+            template.max_points,
+            now,
+            now,
+            current_user["id"]
+        ))
+        
+        template_id = c.lastrowid
+        conn.commit()
+        
+        # Trigger SVN template creation
+        svn_success = False
+        try:
+            svn_success = create_svn_template(svn_path, template.name, template.template_files or {})
+        except Exception as e:
+            logger.warning(f"Failed to create SVN template: {e}")
+        
+        # Auto-update SSH directories for all enrolled students
+        students_updated = 0
+        if svn_success:
+            # Get all students enrolled in this subject for this semester/year
+            c.execute("""
+                SELECT DISTINCT u.username
+                FROM subject_enrollments se
+                JOIN users u ON se.student_id = u.id
+                WHERE se.subject_id = ? AND se.semester = ? AND se.year = ? AND se.status = 'active'
+            """, (template.subject_id, template.semester, template.year))
+            
+            enrolled_students = c.fetchall()
+            
+            # Update SSH directories and create submission repos for each enrolled student
+            from ssh_user_manager import update_user_directories, create_student_submission_repo
+            assignment_path = f"{template.year}-{template.semester}-{subject_code}-Assignment{template.assignment_number}"
+            
+            for (username,) in enrolled_students:
+                try:
+                    # Update SSH directories
+                    result = update_user_directories(username)
+                    if result.get("success"):
+                        students_updated += 1
+                        logger.info(f"Updated SSH directories for {username} after creating assignment template")
+                    else:
+                        logger.warning(f"Failed to update SSH directories for {username}: {result.get('error', 'Unknown error')}")
+                    
+                    # Create student submission repository for this new assignment
+                    repo_result = create_student_submission_repo(username, assignment_path)
+                    if repo_result["success"]:
+                        logger.info(f"Created submission repo for {username}: {assignment_path}")
+                    else:
+                        logger.warning(f"Failed to create submission repo for {username}: {repo_result.get('error')}")
+                        
+                except Exception as e:
+                    logger.error(f"Error updating directories/repos for {username}: {e}")
+        
+        message = "Assignment template created successfully"
+        if not svn_success:
+            message += " (SVN template creation failed - check logs)"
+        if students_updated > 0:
+            message += f" SSH directories updated for {students_updated} enrolled students."
+        
+        return {
+            "id": template_id, 
+            "svn_path": svn_path, 
+            "svn_created": svn_success,
+            "students_updated": students_updated,
+            "message": message
+        }
+        
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="Assignment template already exists for this subject/semester/assignment number")
+    except sqlite3.Error as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+def create_svn_template(svn_path: str, name: str, template_files: Dict):
+    """Create SVN template structure by communicating with SVN container"""
+    import subprocess
+    import tempfile
+    import shutil
+    
+    logger.info(f"Creating SVN template at {svn_path} with name '{name}'")
+    
+    try:
+        # Create temporary working directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Checkout the SVN repository 
+            checkout_cmd = [
+                "docker", "exec", "automark-svn", 
+                "svn", "checkout", "file:///var/svn/repositories/automark", "/tmp/svn-work", "--force"
+            ]
+            result = subprocess.run(checkout_cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                logger.error(f"SVN checkout failed: {result.stderr}")
+                return False
+            
+            # Create template directory structure
+            template_dir = f"/tmp/svn-work/{svn_path}"
+            mkdir_cmd = [
+                "docker", "exec", "automark-svn",
+                "mkdir", "-p", template_dir
+            ]
+            result = subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=10)
+            
+            if result.returncode != 0:
+                logger.error(f"Failed to create template directory: {result.stderr}")
+                return False
+            
+            # Create default template structure if no template_files provided
+            if not template_files:
+                template_files = create_default_template_structure(name)
+            
+            # Create each file in the template
+            for file_path, content in template_files.items():
+                full_path = f"{template_dir}/{file_path}"
+                
+                # Create directory if needed
+                dir_path = "/".join(full_path.split("/")[:-1])
+                if dir_path != template_dir:
+                    mkdir_cmd = [
+                        "docker", "exec", "automark-svn",
+                        "mkdir", "-p", dir_path
+                    ]
+                    subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=10)
+                
+                # Create file content
+                create_file_cmd = [
+                    "docker", "exec", "automark-svn",
+                    "bash", "-c", f"cat > {full_path} << 'TEMPLATE_EOF'\n{content}\nTEMPLATE_EOF"
+                ]
+                result = subprocess.run(create_file_cmd, capture_output=True, text=True, timeout=15)
+                
+                if result.returncode != 0:
+                    logger.error(f"Failed to create file {file_path}: {result.stderr}")
+            
+            # Add files to SVN
+            svn_add_cmd = [
+                "docker", "exec", "automark-svn",
+                "bash", "-c", f"cd /tmp/svn-work && svn add {svn_path} --force"
+            ]
+            result = subprocess.run(svn_add_cmd, capture_output=True, text=True, timeout=20)
+            
+            if result.returncode != 0:
+                logger.error(f"SVN add failed: {result.stderr}")
+                return False
+            
+            # Commit the template
+            commit_cmd = [
+                "docker", "exec", "automark-svn",
+                "bash", "-c", f"cd /tmp/svn-work && svn commit -m 'Create assignment template: {name}' --username admin --password adminpass123 --no-auth-cache"
+            ]
+            result = subprocess.run(commit_cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                logger.error(f"SVN commit failed: {result.stderr}")
+                return False
+            
+            # Cleanup
+            cleanup_cmd = [
+                "docker", "exec", "automark-svn",
+                "rm", "-rf", "/tmp/svn-work"
+            ]
+            subprocess.run(cleanup_cmd, capture_output=True, text=True, timeout=10)
+            
+            logger.info(f"✅ Successfully created SVN template: {svn_path}")
+            return True
+            
+    except subprocess.TimeoutExpired:
+        logger.error("SVN template creation timed out")
+        return False
+    except Exception as e:
+        logger.error(f"Error creating SVN template: {e}")
+        return False
+
+def create_default_template_structure(assignment_name: str) -> Dict[str, str]:
+    """Create default template files for an assignment"""
+    
+    # Determine assignment type from name for better defaults
+    is_database = "database" in assignment_name.lower() or "sql" in assignment_name.lower()
+    is_programming = "programming" in assignment_name.lower() or "code" in assignment_name.lower()
+    is_oop = "oop" in assignment_name.lower() or "object" in assignment_name.lower()
+    
+    template_files = {}
+    
+    # Always create README
+    template_files["README.md"] = f"""# {assignment_name}
+
+## Overview
+This assignment focuses on [assignment objectives].
+
+## Files to Complete
+- See the source files in the `src/` directory
+- Complete the implementation according to the requirements
+- Run tests to verify your solution
+
+## Testing
+Run the test suite with:
+```bash
+python -m pytest tests/
+```
+
+## Submission
+Commit your work using SVN:
+```bash
+svn add .
+svn commit -m "Assignment submission"
+```
+
+## Due Date
+Please check the course website for the official due date.
+
+## Requirements
+- Follow coding standards and best practices
+- Include proper documentation
+- Ensure all tests pass before submission
+"""
+    
+    if is_database:
+        # Database assignment template
+        template_files["src/database.py"] = '''"""
+Assignment: Database Implementation
+Student: [Your Name]
+Student ID: [Your Student ID]
+
+Complete the functions below to implement the required database operations.
+"""
+
+import sqlite3
+from typing import List, Dict, Any, Optional
+
+def connect_database(db_path: str) -> sqlite3.Connection:
+    """
+    Create a connection to the SQLite database.
+    
+    Args:
+        db_path: Path to the SQLite database file
+        
+    Returns:
+        sqlite3.Connection object
+    """
+    # TODO: Implement database connection
+    pass
+
+def create_tables(conn: sqlite3.Connection) -> None:
+    """
+    Create the required tables for this assignment.
+    
+    Args:
+        conn: Database connection object
+    """
+    # TODO: Implement table creation
+    pass
+
+def execute_query(conn: sqlite3.Connection, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+    """
+    Execute a SELECT query and return results as list of dictionaries.
+    
+    Args:
+        conn: Database connection object
+        query: SQL query string
+        params: Query parameters
+        
+    Returns:
+        List of dictionaries containing query results
+    """
+    # TODO: Implement query execution
+    pass
+'''
+
+        template_files["src/queries.sql"] = f'''-- {assignment_name}
+-- Student: [Your Name]
+-- Student ID: [Your Student ID]
+
+-- Query 1: Create table(s)
+-- TODO: Write CREATE TABLE statement(s)
+
+-- Query 2: Insert sample data
+-- TODO: Write INSERT statement(s)
+
+-- Query 3: Basic SELECT query
+-- TODO: Write SELECT statement
+
+-- Query 4: JOIN query
+-- TODO: Write SELECT statement with JOIN
+
+-- Query 5: Aggregate query
+-- TODO: Write SELECT statement with GROUP BY/aggregation
+'''
+
+        template_files["tests/test_database.py"] = '''"""
+Test suite for Database Assignment
+"""
+
+import pytest
+import sqlite3
+import tempfile
+import os
+from src.database import connect_database, create_tables, execute_query
+
+@pytest.fixture
+def temp_db():
+    """Create a temporary database for testing"""
+    fd, path = tempfile.mkstemp(suffix='.db')
+    os.close(fd)
+    yield path
+    os.unlink(path)
+
+def test_database_connection(temp_db):
+    """Test that database connection works"""
+    conn = connect_database(temp_db)
+    assert isinstance(conn, sqlite3.Connection)
+    conn.close()
+
+def test_table_creation(temp_db):
+    """Test that tables are created correctly"""
+    conn = connect_database(temp_db)
+    create_tables(conn)
+    
+    # Check that tables exist
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = [row[0] for row in cursor.fetchall()]
+    
+    # TODO: Add assertions for expected tables
+    assert len(tables) > 0, "No tables were created"
+    conn.close()
+
+# TODO: Add more specific tests for your implementation
+'''
+
+    elif is_oop or is_programming:
+        # Programming/OOP assignment template
+        template_files["src/main.py"] = f'''"""
+{assignment_name}
+Student: [Your Name]
+Student ID: [Your Student ID]
+
+Implement the required classes and functions below.
+"""
+
+class BaseClass:
+    """
+    Base class for the assignment.
+    """
+    
+    def __init__(self):
+        # TODO: Implement initialization
+        pass
+    
+    def method_example(self):
+        """
+        Example method to implement.
+        """
+        # TODO: Implement this method
+        pass
+
+# TODO: Add more classes and functions as required
+'''
+
+        template_files["tests/test_main.py"] = '''"""
+Test suite for Programming Assignment
+"""
+
+import pytest
+from src.main import BaseClass
+
+def test_base_class_creation():
+    """Test that BaseClass can be instantiated"""
+    obj = BaseClass()
+    assert obj is not None
+
+def test_method_example():
+    """Test the example method"""
+    obj = BaseClass()
+    # TODO: Add specific tests for your implementation
+    assert hasattr(obj, 'method_example')
+
+# TODO: Add more specific tests
+'''
+
+    else:
+        # Generic assignment template
+        template_files["src/solution.py"] = f'''"""
+{assignment_name}
+Student: [Your Name]
+Student ID: [Your Student ID]
+
+Implement your solution below.
+"""
+
+def main():
+    """
+    Main function for the assignment.
+    """
+    # TODO: Implement your solution here
+    pass
+
+if __name__ == "__main__":
+    main()
+'''
+
+        template_files["tests/test_solution.py"] = '''"""
+Test suite for Assignment
+"""
+
+import pytest
+from src.solution import main
+
+def test_main_function():
+    """Test that main function exists and runs"""
+    # TODO: Add specific tests for your implementation
+    assert callable(main)
+
+# TODO: Add more specific tests
+'''
+    
+    # Always add a requirements.txt for Python dependencies
+    template_files["requirements.txt"] = """# Add any required Python packages here
+pytest>=7.0.0
+# Add other dependencies as needed
+"""
+    
+    # Add .gitignore equivalent for SVN
+    template_files[".svnignore"] = """*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache/
+*.log
+.DS_Store
+"""
+    
+    return template_files
+
+# API endpoints for subject enrollments
+@app.post("/api/v1/enrollments")
+async def enroll_student(enrollment: EnrollmentCreate, current_user: dict = Depends(get_current_user)):
+    """Enroll current user (student) in a subject"""
+    if current_user["role"] != "student":
+        raise HTTPException(status_code=403, detail="Only students can enroll in subjects")
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        # Find subject by code
+        c.execute("SELECT id FROM subjects WHERE code = ?", (enrollment.subject_code,))
+        subject_result = c.fetchone()
+        if not subject_result:
+            raise HTTPException(status_code=404, detail="Subject not found")
+        
+        subject_id = subject_result[0]
+        
+        # Check if already enrolled
+        c.execute("""
+            SELECT id FROM subject_enrollments 
+            WHERE student_id = ? AND subject_id = ? AND semester = ? AND year = ?
+        """, (current_user["id"], subject_id, enrollment.semester, enrollment.year))
+        
+        if c.fetchone():
+            raise HTTPException(status_code=409, detail="Already enrolled in this subject for this semester")
+        
+        # Enroll student
+        c.execute("""
+            INSERT INTO subject_enrollments (student_id, subject_id, enrolled_at, semester, year, status)
+            VALUES (?, ?, ?, ?, ?, 'active')
+        """, (current_user["id"], subject_id, now_iso(), enrollment.semester, enrollment.year))
+        
+        conn.commit()
+        
+        # Trigger SSH directory creation for this enrollment
+        try:
+            from ssh_user_manager import update_user_directories
+            update_result = update_user_directories(current_user["username"])
+            if not update_result["success"]:
+                logger.warning(f"Failed to update SSH directories for {current_user['username']}: {update_result.get('error')}")
+        except Exception as e:
+            logger.error(f"Error updating SSH directories for {current_user['username']}: {e}")
+        
+        # Create student submission repositories for existing assignments in this subject
+        try:
+            from ssh_user_manager import create_student_submission_repo
+            
+            # Get existing assignment templates for this subject/semester/year
+            c.execute("""
+                SELECT at.assignment_number, at.name, s.code
+                FROM assignment_templates at
+                JOIN subjects s ON at.subject_id = s.id
+                WHERE at.subject_id = ? AND at.semester = ? AND at.year = ? AND at.status IN ('draft', 'published')
+            """, (subject_id, enrollment.semester, enrollment.year))
+            
+            existing_assignments = c.fetchall()
+            
+            for assignment_number, assignment_name, subject_code in existing_assignments:
+                assignment_path = f"{enrollment.year}-{enrollment.semester}-{subject_code}-Assignment{assignment_number}"
+                repo_result = create_student_submission_repo(current_user["username"], assignment_path)
+                if repo_result["success"]:
+                    logger.info(f"Created submission repo for {current_user['username']}: {assignment_path}")
+                else:
+                    logger.warning(f"Failed to create submission repo for {current_user['username']}: {repo_result.get('error')}")
+                    
+        except Exception as e:
+            logger.error(f"Error creating student submission repositories for {current_user['username']}: {e}")
+        
+        return {"message": f"Successfully enrolled in {enrollment.subject_code} for {enrollment.semester} {enrollment.year}"}
+        
+    except sqlite3.Error as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+@app.get("/api/v1/enrollments/my")
+async def get_my_enrollments(current_user: dict = Depends(get_current_user)):
+    """Get current user's enrollments"""
+    if current_user["role"] != "student":
+        raise HTTPException(status_code=403, detail="Only students can view enrollments")
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        c.execute("""
+            SELECT se.*, s.code, s.name, u.first_name, u.last_name
+            FROM subject_enrollments se
+            JOIN subjects s ON se.subject_id = s.id
+            JOIN users u ON s.lecturer_id = u.id
+            WHERE se.student_id = ? AND se.status = 'active'
+            ORDER BY se.year DESC, se.semester, s.code
+        """, (current_user["id"],))
+        
+        enrollments = c.fetchall()
+        return [dict(enrollment) for enrollment in enrollments]
+        
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+@app.get("/api/v1/subjects/{subject_id}/students")
+async def get_subject_students(subject_id: int, current_user: dict = Depends(get_current_user)):
+    """Get all students enrolled in a subject (lecturers only)"""
+    if current_user["role"] != "lecturer":
+        raise HTTPException(status_code=403, detail="Only lecturers can view subject enrollments")
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        # Verify lecturer teaches this subject
+        c.execute("SELECT lecturer_id FROM subjects WHERE id = ?", (subject_id,))
+        subject_result = c.fetchone()
+        if not subject_result or subject_result["lecturer_id"] != current_user["id"]:
+            raise HTTPException(status_code=403, detail="You don't teach this subject")
+        
+        # Get enrolled students
+        c.execute("""
+            SELECT se.*, u.username, u.email, u.first_name, u.last_name
+            FROM subject_enrollments se
+            JOIN users u ON se.student_id = u.id
+            WHERE se.subject_id = ? AND se.status = 'active'
+            ORDER BY se.semester, se.year, u.first_name, u.last_name
+        """, (subject_id,))
+        
+        students = c.fetchall()
+        return [dict(student) for student in students]
+        
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+@app.post("/api/v1/subjects/{subject_id}/enroll-student")
+async def enroll_student_admin(subject_id: int, student_id: int, semester: str, year: int = 2025, 
+                               current_user: dict = Depends(get_current_user)):
+    """Enroll a student in a subject (lecturers only)"""
+    if current_user["role"] != "lecturer":
+        raise HTTPException(status_code=403, detail="Only lecturers can enroll students")
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    try:
+        # Verify lecturer teaches this subject
+        c.execute("SELECT lecturer_id FROM subjects WHERE id = ?", (subject_id,))
+        subject_result = c.fetchone()
+        if not subject_result or subject_result[0] != current_user["id"]:
+            raise HTTPException(status_code=403, detail="You don't teach this subject")
+        
+        # Verify student exists
+        c.execute("SELECT username FROM users WHERE id = ? AND role = 'student'", (student_id,))
+        student_result = c.fetchone()
+        if not student_result:
+            raise HTTPException(status_code=404, detail="Student not found")
+        
+        # Check if already enrolled
+        c.execute("""
+            SELECT id FROM subject_enrollments 
+            WHERE student_id = ? AND subject_id = ? AND semester = ? AND year = ?
+        """, (student_id, subject_id, semester, year))
+        
+        if c.fetchone():
+            raise HTTPException(status_code=409, detail="Student already enrolled")
+        
+        # Enroll student
+        c.execute("""
+            INSERT INTO subject_enrollments (student_id, subject_id, enrolled_at, semester, year, status)
+            VALUES (?, ?, ?, ?, ?, 'active')
+        """, (student_id, subject_id, now_iso(), semester, year))
+        
+        conn.commit()
+        
+        # Update SSH directories for enrolled student
+        try:
+            from ssh_user_manager import update_user_directories
+            update_result = update_user_directories(student_result[0])
+            if not update_result["success"]:
+                logger.warning(f"Failed to update SSH directories for {student_result[0]}: {update_result.get('error')}")
+        except Exception as e:
+            logger.error(f"Error updating SSH directories for {student_result[0]}: {e}")
+        
+        return {"message": f"Successfully enrolled student in subject"}
+        
+    except sqlite3.Error as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         conn.close()
 
