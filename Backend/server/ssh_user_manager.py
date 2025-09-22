@@ -9,6 +9,7 @@ SSH User Management (Docker SDK)
 
 import os
 import logging
+import subprocess
 from typing import Dict, Any
 
 try:
@@ -76,49 +77,22 @@ class SSHUserManager:
                 result["error"] = f"Failed to set password: {out}"
                 return result
 
-            # create simple assignment folders and set perms
-            code, out = self._exec_sh(
-                f"""
-                set -e
-                mkdir -p "/home/{username}/2025/AUT/PX/Assignment1" \
-                         "/home/{username}/2025/AUT/PX/Assignment2" \
-                         "/home/{username}/2025/SPR/PX/Assignment1" \
-                         "/home/{username}/2025/SPR/PX/Assignment2"
-                chown -R "{username}:{username}" "/home/{username}/2025"
-                chmod 755 "/home/{username}/2025"
-                chmod -R 755 "/home/{username}/2025"
-                chmod 775 "/home/{username}/2025/AUT/PX/Assignment1" "/home/{username}/2025/AUT/PX/Assignment2" \
-                          "/home/{username}/2025/SPR/PX/Assignment1" "/home/{username}/2025/SPR/PX/Assignment2"
-                echo 'echo "Welcome to Automark, {username}! Your assignment folders are in ~/2025/"' >> "/home/{username}/.bashrc"
-
             # Create base directory structure (assignments will be created based on enrollments)
-            success, stdout, stderr = self._exec_in_container([
-                "bash", "-c", f"""
+            code, out = self._exec_sh(f"""
                 # Create base year directory structure
-                mkdir -p "/home/{username}/2025/AUT" \\
-                         "/home/{username}/2025/SPR"
+                mkdir -p "/home/{username}/2025/AUT" "/home/{username}/2025/SPR"
                 
                 # Set proper ownership and permissions
                 chown -R "{username}:{username}" "/home/{username}/2025"
                 chmod 755 "/home/{username}/2025"
                 chmod -R 755 "/home/{username}/2025"
-                """
-            ])
-            
-            if not success:
-                result["error"] = f"Failed to create chroot directories: {stderr}"
-                return result
-            
-            # Create enrollment-based directories and welcome message
-            success, stdout, stderr = self._exec_in_container([
-                "bash", "-c", f"""
+                
                 # Create a welcome message with enrollment instructions
                 echo 'echo "Welcome to Automark, {username}!"' >> "/home/{username}/.bashrc"
                 echo 'echo "Your assignment folders are in ~/2025/"' >> "/home/{username}/.bashrc"
                 echo 'echo "Use the web interface to enroll in subjects and get assignments."' >> "/home/{username}/.bashrc"
                 chown "{username}:{username}" "/home/{username}/.bashrc"
-                """
-            )
+            """)
             if code != 0:
                 result["error"] = f"Failed to set up user environment: {out}"
                 return result
@@ -205,24 +179,6 @@ class SSHUserManager:
         return result
     
     def delete_user(self, username: str) -> Dict[str, Any]:
-        """
-        Delete an SSH user from the container
-        Returns dict with success status and details
-        """
-        result = {
-            "success": False,
-            "username": username,
-            "message": "",
-            "error": None
-        }
-        
-        # Check if user exists
-        if not self.user_exists(username):
-            result["message"] = f"User '{username}' does not exist"
-            result["success"] = True  # Not an error, user doesn't exist
-            return result
-
-    def delete_user(self, username: str) -> Dict[str, Any]:
         result = {"success": False, "username": username, "message": "", "error": None}
         try:
             if not self.user_exists(username):
@@ -275,8 +231,10 @@ def add_existing_user_to_svn(username: str, password: str) -> Dict[str, Any]:
 
 def create_student_submission_repo(username: str, assignment_path: str) -> Dict[str, Any]:
     """
-    Create a student submission repository for an assignment
+    Create a student submission repository for an assignment by copying from template
     assignment_path example: "2025-AUT-Comp0067-Assignment1"
+    
+    This uses 'svn copy' to preserve ancestry, eliminating switch issues
     """
     result = {
         "success": False,
@@ -285,27 +243,35 @@ def create_student_submission_repo(username: str, assignment_path: str) -> Dict[
     }
     
     try:
+        template_path = f"templates/{assignment_path}"
         student_repo_path = f"student-repos/{assignment_path}/{username}"
         
-        # Create student submission directory in SVN
+        # Copy template to student repository using svn copy (preserves ancestry)
         cmd = [
             "docker", "exec", "automark-svn",
             "bash", "-c", f"""
-            # Check out the main repository
-            svn checkout file:///var/svn/repositories/automark /tmp/svn-student-setup --force
+            set -e
+            cd /tmpd 
             
-            # Create student directory structure
-            mkdir -p "/tmp/svn-student-setup/{student_repo_path}"
+            # First, create parent directory structure if it doesn't exist
+            svn checkout file:///var/svn/repositories/automark svn-setup --force
             
-            # Add to SVN
-            cd /tmp/svn-student-setup
-            svn add "{student_repo_path}" --parents
+            # Create parent directories
+            mkdir -p "svn-setup/student-repos/{assignment_path}"
             
-            # Commit the new student repository
-            svn commit -m "Create submission repository for {username} - {assignment_path}" --username admin --password adminpass123 --no-auth-cache
+            cd svn-setup
+            svn add "student-repos/{assignment_path}" --parents --force 2>/dev/null || true
+            svn commit -m "Create parent directory for {assignment_path}" --username admin --password adminpass123 --no-auth-cache 2>/dev/null || true
             
-            # Clean up
-            rm -rf /tmp/svn-student-setup
+            # Clean up working copy
+            cd /tmp
+            rm -rf svn-setup
+            
+            # Now use svn copy to create student repo from template (preserves ancestry!)
+            svn copy file:///var/svn/repositories/automark/{template_path} \
+                     file:///var/svn/repositories/automark/{student_repo_path} \
+                     -m "Create submission repository for {username} from {assignment_path} template" \
+                     --username admin --password adminpass123 --no-auth-cache
             """
         ]
         
@@ -316,7 +282,7 @@ def create_student_submission_repo(username: str, assignment_path: str) -> Dict[
             return result
         
         result["success"] = True
-        result["message"] = f"Created submission repository: {student_repo_path}"
+        result["message"] = f"Created submission repository from template: {student_repo_path}"
         result["repo_path"] = student_repo_path
         
     except subprocess.TimeoutExpired:
@@ -396,17 +362,15 @@ def update_user_directories(username: str) -> Dict[str, Any]:
             if not assignment_templates:
                 logger.info(f"No assignment templates found for {subject_code} {semester} {year} - creating base subject directory only")
                 # Create just the subject directory if no assignments exist yet
-                success, stdout, stderr = manager._exec_in_container([
-                    "bash", "-c", f"""
+                code, out = manager._exec_sh(f"""
                     if [ ! -d "{subject_path}" ]; then
                         mkdir -p "{subject_path}"
                         chown "{username}:{username}" "{subject_path}"
                         chmod 755 "{subject_path}"
                         echo "Created base directory: {subject_path}"
                     fi
-                    """
-                ])
-                if success:
+                """)
+                if code == 0:
                     directories_created.append(subject_path)
                 continue
             
@@ -414,8 +378,7 @@ def update_user_directories(username: str) -> Dict[str, Any]:
             for assignment_number, assignment_name, status in assignment_templates:
                 assignment_path = f"{subject_path}/Assignment{assignment_number}"
                 
-                success, stdout, stderr = manager._exec_in_container([
-                    "bash", "-c", f"""
+                code, out = manager._exec_sh(f"""
                     # Create assignment directory if it doesn't exist
                     if [ ! -d "{assignment_path}" ]; then
                         mkdir -p "{assignment_path}"
@@ -425,18 +388,16 @@ def update_user_directories(username: str) -> Dict[str, Any]:
                     else
                         echo "Exists: {assignment_path} ({assignment_name})"
                     fi
-                    """
-                ])
+                """)
                 
-                if success:
+                if code == 0:
                     directories_created.append(assignment_path)
                 else:
-                    logger.warning(f"Failed to create directory {assignment_path}: {stderr}")
+                    logger.warning(f"Failed to create directory {assignment_path}: {out}")
         
         # Update welcome message with available subjects and ensure ALL permissions are correct
         subject_list = ", ".join([f"{sem}/{code}" for sem, year, code in enrollments])
-        success, stdout, stderr = manager._exec_in_container([
-            "bash", "-c", f"""
+        code, out = manager._exec_sh(f"""
             # Update .bashrc with current enrollments
             grep -v "enrolled subjects" "/home/{username}/.bashrc" > "/tmp/{username}_bashrc" 2>/dev/null || true
             mv "/tmp/{username}_bashrc" "/home/{username}/.bashrc" 2>/dev/null || true
@@ -454,8 +415,7 @@ def update_user_directories(username: str) -> Dict[str, Any]:
             
             # Make .bashrc executable
             chmod 644 "/home/{username}/.bashrc"
-            """
-        ])
+        """)
         
         result["success"] = True
         result["message"] = f"Updated directories for {len(directories_created)} assignments across {len(enrollments)} subjects"

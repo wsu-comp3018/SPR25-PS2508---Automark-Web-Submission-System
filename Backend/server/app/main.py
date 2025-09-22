@@ -1579,261 +1579,51 @@ def create_svn_template(svn_path: str, name: str, template_files: Dict):
 def create_default_template_structure(assignment_name: str) -> Dict[str, str]:
     """Create default template files for an assignment"""
     
-    # Determine assignment type from name for better defaults
-    is_database = "database" in assignment_name.lower() or "sql" in assignment_name.lower()
-    is_programming = "programming" in assignment_name.lower() or "code" in assignment_name.lower()
-    is_oop = "oop" in assignment_name.lower() or "object" in assignment_name.lower()
-    
     template_files = {}
     
-    # Always create README
-    template_files["README.md"] = f"""# {assignment_name}
+    # Create a single assignment instruction file
+    template_files["ASSIGNMENT_INSTRUCTIONS.md"] = f"""# {assignment_name}
 
-## Overview
-This assignment focuses on [assignment objectives].
+## Assignment Overview
+This assignment focuses on [assignment objectives]. Please read these instructions carefully and complete all required tasks.
 
-## Files to Complete
-- See the source files in the `src/` directory
-- Complete the implementation according to the requirements
-- Run tests to verify your solution
+## Student Information
+- **Student Name**: [Your Full Name]
+- **Student ID**: [Your Student ID]
+- **Subject**: [Subject Code]
+- **Due Date**: [Check course website for official due date]
 
-## Testing
-Run the test suite with:
-```bash
-python -m pytest tests/
-```
-
-## Submission
-Commit your work using SVN:
-```bash
-svn add .
-svn commit -m "Assignment submission"
-```
-
-## Due Date
-Please check the course website for the official due date.
+## Assignment Description
+[Detailed assignment description will be provided by your lecturer]
 
 ## Requirements
-- Follow coding standards and best practices
-- Include proper documentation
-- Ensure all tests pass before submission
-"""
-    
-    if is_database:
-        # Database assignment template
-        template_files["src/database.py"] = '''"""
-Assignment: Database Implementation
-Student: [Your Name]
-Student ID: [Your Student ID]
+1. Complete all required tasks as outlined by your lecturer
+2. Follow coding standards and best practices
+3. Include proper documentation and comments
+4. Test your work thoroughly before submission
 
-Complete the functions below to implement the required database operations.
-"""
+## Submission Instructions
+1. Complete your work in this directory
+2. Add any files you create using: `svn add filename`
+3. Commit your work using SVN:
+   ```bash
+   svn add .
+   svn commit -m "Assignment submission - [Your Name]"
+   ```
+4. You can submit multiple times - your latest commit before the deadline will be graded
 
-import sqlite3
-from typing import List, Dict, Any, Optional
+## Getting Help
+- Check course materials and lecture notes
+- Ask questions during tutorial sessions
+- Contact your lecturer if you need clarification
 
-def connect_database(db_path: str) -> sqlite3.Connection:
-    """
-    Create a connection to the SQLite database.
-    
-    Args:
-        db_path: Path to the SQLite database file
-        
-    Returns:
-        sqlite3.Connection object
-    """
-    # TODO: Implement database connection
-    pass
+## Academic Integrity
+- This work must be your own
+- Follow university academic integrity policies
+- Cite any sources or references used
 
-def create_tables(conn: sqlite3.Connection) -> None:
-    """
-    Create the required tables for this assignment.
-    
-    Args:
-        conn: Database connection object
-    """
-    # TODO: Implement table creation
-    pass
-
-def execute_query(conn: sqlite3.Connection, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-    """
-    Execute a SELECT query and return results as list of dictionaries.
-    
-    Args:
-        conn: Database connection object
-        query: SQL query string
-        params: Query parameters
-        
-    Returns:
-        List of dictionaries containing query results
-    """
-    # TODO: Implement query execution
-    pass
-'''
-
-        template_files["src/queries.sql"] = f'''-- {assignment_name}
--- Student: [Your Name]
--- Student ID: [Your Student ID]
-
--- Query 1: Create table(s)
--- TODO: Write CREATE TABLE statement(s)
-
--- Query 2: Insert sample data
--- TODO: Write INSERT statement(s)
-
--- Query 3: Basic SELECT query
--- TODO: Write SELECT statement
-
--- Query 4: JOIN query
--- TODO: Write SELECT statement with JOIN
-
--- Query 5: Aggregate query
--- TODO: Write SELECT statement with GROUP BY/aggregation
-'''
-
-        template_files["tests/test_database.py"] = '''"""
-Test suite for Database Assignment
-"""
-
-import pytest
-import sqlite3
-import tempfile
-import os
-from src.database import connect_database, create_tables, execute_query
-
-@pytest.fixture
-def temp_db():
-    """Create a temporary database for testing"""
-    fd, path = tempfile.mkstemp(suffix='.db')
-    os.close(fd)
-    yield path
-    os.unlink(path)
-
-def test_database_connection(temp_db):
-    """Test that database connection works"""
-    conn = connect_database(temp_db)
-    assert isinstance(conn, sqlite3.Connection)
-    conn.close()
-
-def test_table_creation(temp_db):
-    """Test that tables are created correctly"""
-    conn = connect_database(temp_db)
-    create_tables(conn)
-    
-    # Check that tables exist
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    tables = [row[0] for row in cursor.fetchall()]
-    
-    # TODO: Add assertions for expected tables
-    assert len(tables) > 0, "No tables were created"
-    conn.close()
-
-# TODO: Add more specific tests for your implementation
-'''
-
-    elif is_oop or is_programming:
-        # Programming/OOP assignment template
-        template_files["src/main.py"] = f'''"""
-{assignment_name}
-Student: [Your Name]
-Student ID: [Your Student ID]
-
-Implement the required classes and functions below.
-"""
-
-class BaseClass:
-    """
-    Base class for the assignment.
-    """
-    
-    def __init__(self):
-        # TODO: Implement initialization
-        pass
-    
-    def method_example(self):
-        """
-        Example method to implement.
-        """
-        # TODO: Implement this method
-        pass
-
-# TODO: Add more classes and functions as required
-'''
-
-        template_files["tests/test_main.py"] = '''"""
-Test suite for Programming Assignment
-"""
-
-import pytest
-from src.main import BaseClass
-
-def test_base_class_creation():
-    """Test that BaseClass can be instantiated"""
-    obj = BaseClass()
-    assert obj is not None
-
-def test_method_example():
-    """Test the example method"""
-    obj = BaseClass()
-    # TODO: Add specific tests for your implementation
-    assert hasattr(obj, 'method_example')
-
-# TODO: Add more specific tests
-'''
-
-    else:
-        # Generic assignment template
-        template_files["src/solution.py"] = f'''"""
-{assignment_name}
-Student: [Your Name]
-Student ID: [Your Student ID]
-
-Implement your solution below.
-"""
-
-def main():
-    """
-    Main function for the assignment.
-    """
-    # TODO: Implement your solution here
-    pass
-
-if __name__ == "__main__":
-    main()
-'''
-
-        template_files["tests/test_solution.py"] = '''"""
-Test suite for Assignment
-"""
-
-import pytest
-from src.solution import main
-
-def test_main_function():
-    """Test that main function exists and runs"""
-    # TODO: Add specific tests for your implementation
-    assert callable(main)
-
-# TODO: Add more specific tests
-'''
-    
-    # Always add a requirements.txt for Python dependencies
-    template_files["requirements.txt"] = """# Add any required Python packages here
-pytest>=7.0.0
-# Add other dependencies as needed
-"""
-    
-    # Add .gitignore equivalent for SVN
-    template_files[".svnignore"] = """*.pyc
-__pycache__/
-*.pyo
-*.pyd
-.Python
-*.so
-.pytest_cache/
-*.log
-.DS_Store
+---
+**Good luck with your assignment!**
 """
     
     return template_files
