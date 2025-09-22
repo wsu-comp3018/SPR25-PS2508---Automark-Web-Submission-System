@@ -8,8 +8,8 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 import logging
 
+# Keep a single uuid import
 import uuid
-
 
 import os
 from typing import List, Optional, Dict
@@ -28,11 +28,10 @@ STATIC_DIR = BASE_DIR / "static"
 # print("STATIC_DIR exists?", STATIC_DIR.exists(), BASE_DIR)
 # print("Files inside STATIC_DIR:", list(STATIC_DIR.rglob("*")))
 
-import sys
-sys.path.append('/app')
-from ssh_user_manager import create_ssh_user_for_registration
-
-DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "automark.db"))
+# Remove duplicate import and DB_PATH redefinition
+# sys.path.append('/app')
+# from ssh_user_manager import create_ssh_user_for_registration
+# DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "automark.db"))
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -451,6 +450,104 @@ def hash_password(pw: str) -> str:
 def now_iso():
     return datetime.datetime.utcnow().isoformat() + "Z"
 
+def ensure_ssh_container_running():
+    """
+    Ensure the SSH management container is running.
+    - If container exists but is stopped, start it.
+    - If container does not exist and SSH_CONTAINER_IMAGE is set, create+run it.
+    - If Docker or socket unavailable, log a warning and continue.
+    Environment variables (optional):
+      SSH_CONTAINER_NAME   -> defaults to 'automark-ssh'
+      SSH_CONTAINER_IMAGE  -> e.g. 'automark-ssh:latest'
+      SSH_HOST_PORT        -> host port to map to container 22 (default 2222)
+      SSH_PORTS_JSON       -> JSON mapping for ports, overrides SSH_HOST_PORT (optional)
+      SSH_VOLUMES_JSON     -> JSON volumes mapping, e.g. {"automark_ssh_home": {"bind": "/home", "mode": "rw"}}
+      SSH_ENV_JSON         -> JSON environment dict for container
+      SSH_COMMAND          -> optional command override
+    """
+    if docker is None or not os.path.exists("/var/run/docker.sock"):
+        logger.warning("Docker unavailable; skipping SSH container bootstrap")
+        return
+
+    name = os.getenv("SSH_CONTAINER_NAME", "automark-ssh")
+    image = os.getenv("SSH_CONTAINER_IMAGE")  # if not set, we won't auto-create
+    host_port = int(os.getenv("SSH_HOST_PORT", "2222"))
+    ports_json = os.getenv("SSH_PORTS_JSON")
+    volumes_json = os.getenv("SSH_VOLUMES_JSON")
+    env_json = os.getenv("SSH_ENV_JSON")
+    command = os.getenv("SSH_COMMAND")
+
+    ports = None
+    if ports_json:
+        try:
+            ports = json.loads(ports_json)
+        except Exception as e:
+            logger.warning(f"Invalid SSH_PORTS_JSON: {e}")
+    if ports is None:
+        ports = {"22/tcp": host_port}
+
+    volumes = None
+    if volumes_json:
+        try:
+            volumes = json.loads(volumes_json)
+        except Exception as e:
+            logger.warning(f"Invalid SSH_VOLUMES_JSON: {e}")
+
+    env = None
+    if env_json:
+        try:
+            env = json.loads(env_json)
+        except Exception as e:
+            logger.warning(f"Invalid SSH_ENV_JSON: {e}")
+
+    client = docker.from_env()
+    try:
+        container = None
+        try:
+            container = client.containers.get(name)
+        except Exception:
+            container = None
+
+        if container:
+            container.reload()
+            status = getattr(container, "status", "unknown")
+            if status != "running":
+                logger.info(f"Starting existing SSH container '{name}' (status: {status})")
+                container.start()
+            else:
+                logger.info(f"SSH container '{name}' already running")
+            return
+
+        # Container not found; create only if image is configured
+        if not image:
+            logger.warning(f"SSH container '{name}' not found and SSH_CONTAINER_IMAGE not set; skip auto-create")
+            return
+
+        logger.info(f"Creating SSH container '{name}' from image '{image}'")
+        # Pull image (best effort)
+        try:
+            client.images.pull(image)
+        except Exception as e:
+            logger.warning(f"Image pull failed (continuing): {e}")
+
+        run_kwargs = {
+            "name": name,
+            "detach": True,
+            "ports": ports,
+            "restart_policy": {"Name": "unless-stopped"},
+        }
+        if volumes:
+            run_kwargs["volumes"] = volumes
+        if env:
+            run_kwargs["environment"] = env
+        if command:
+            run_kwargs["command"] = command
+
+        client.containers.run(image, **run_kwargs)
+        logger.info(f"✅ SSH container '{name}' created and started")
+    except Exception as e:
+        logger.error(f"Failed to ensure SSH container '{name}': {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -458,6 +555,11 @@ async def lifespan(app: FastAPI):
     print(f"🗃️ LIFESPAN: Database path: {DB_PATH}")
     init_db()
     print("✅ LIFESPAN: Database initialized")
+    # Ensure SSH container is up
+    try:
+        ensure_ssh_container_running()
+    except Exception as e:
+        logger.warning(f"SSH container bootstrap error: {e}")
     yield
     # Shutdown (nothing needed for now)
     print("🛑 LIFESPAN: Shutting down application...")
@@ -759,10 +861,24 @@ def login(body: LoginIn):
         }
     )
 
-# Add this fix to the session validation endpoint around line 238
-@app.get("/api/v1/auth/session/{token}")
-def validate_session(token: str):
-    """Validate session token and return user info"""
+# --- Small helpers (added) ---
+def _dict_rows(c: sqlite3.Cursor) -> List[dict]:
+    return [dict(r) for r in c.fetchall()]
+
+def _ensure_lecturer(current_user: dict):
+    if current_user.get("role") != "lecturer":
+        raise HTTPException(status_code=403, detail="Only lecturers can perform this action")
+
+def _ensure_folder_owner(c: sqlite3.Cursor, folder_id: int, lecturer_id: int):
+    c.execute("SELECT lecturer_id FROM folders WHERE id = ?", (folder_id,))
+    row = c.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    if row[0] != lecturer_id:
+        raise HTTPException(status_code=403, detail="You do not own this folder")
+
+def _set_submission_status(submission_id: int, status: str, feedback: Optional[str] = None):
+    """Persist submission status and optional feedback."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     if feedback is not None:
@@ -778,132 +894,14 @@ def validate_session(token: str):
     conn.commit()
     conn.close()
 
-
-def _set_submission_score(submission_id: int, score: int):
-    """Optional helper to persist numeric score + graded_at."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(
-        "UPDATE submissions SET score = ?, graded_at = ? WHERE id = ?",
-        (score, now_iso(), submission_id),
-    )
-    conn.commit()
-    conn.close()
-
-
-def _run_submission_job(submission_id: int, env_extra: Optional[dict] = None):
-    """
-    Launch a sandbox container if Docker SDK + socket are available; otherwise simulate.
-    Status transitions: queued -> running -> completed/failed.
-    """
-    try:
-        _set_submission_status(submission_id, "running")
-
-        # Simulated path when Docker isn't available inside API
-        if docker is None or not os.path.exists("/var/run/docker.sock"):
-            time.sleep(1.0)
-            _set_submission_status(submission_id, "completed", feedback='{"simulated": true}')
-            return
-
-        client = docker.from_env()
-        env = {"SUBMISSION_ID": str(submission_id)}
-        if env_extra:
-            env.update(env_extra)
-
-        name = f"automark-sbx-{submission_id}-{uuid.uuid4().hex[:8]}"
-        container = None
-        try:
-            container = client.containers.run(
-                "automark-sandbox:latest",
-                command=["python", "/work/run.py"],  # ensure run.py actually runs
-                name=name,
-                environment=env,
-
-                # ---- isolation/limits ----
-                network_disabled=True,
-                read_only=True,
-                mem_limit="512m",
-                nano_cpus=1_000_000_000,   # 1 CPU
-                pids_limit=256,
-                security_opt=["no-new-privileges"],
-                cap_drop=["ALL"],
-                tmpfs={"/tmp": "", "/run": ""},
-                working_dir="/work",
-                user="runner",
-                # ---------------------------
-
-                detach=True,
-                auto_remove=False,          # fetch logs first, then remove
-            )
-
-            # Wait for exit, then read logs
-            exit_info = container.wait()   # blocks until finished
-            code = exit_info.get("StatusCode", 1) if isinstance(exit_info, dict) else int(exit_info)
-            try:
-                raw = container.logs(stdout=True, stderr=True, tail=2000)
-                logs = raw.decode("utf-8", "ignore") if isinstance(raw, (bytes, bytearray)) else str(raw)
-            except Exception as log_err:
-                logs = f"[no logs available: {log_err}]"
-
-        except Exception as e:
-            code = 1
-            logs = f"runner error: {e}"
-        finally:
-            if container is not None:
-                try:
-                    container.remove(force=True)  # remove AFTER grabbing logs
-                except Exception:
-                    pass
-
-        # --- Parse structured JSON from the runner if present ---
-        # Default based on exit code
-        status = "completed" if code == 0 else "failed"
-        fb = (logs or "")[-4000:]
-        score = None
-
-        import json
-        try:
-            last_line = fb.strip().splitlines()[-1]
-            obj = json.loads(last_line)
-            if isinstance(obj, dict):
-                # Prefer explicit ok/status if provided by the runner
-                if "ok" in obj:
-                    status = "completed" if bool(obj["ok"]) else "failed"
-                elif obj.get("status") in ("completed", "failed"):
-                    status = obj["status"]
-
-                if "score" in obj and obj["score"] is not None:
-                    score = int(obj["score"])
-
-                # Keep compact JSON as feedback for UI/logs
-                fb = json.dumps(obj, ensure_ascii=False)
-        except Exception:
-            # If parsing fails, fall back to exit code + raw logs
-            pass
-
-        _set_submission_status(submission_id, status, feedback=fb)
-        if score is not None:
-            _set_submission_score(submission_id, score)
-
-    except Exception as e:
-        _set_submission_status(
-            submission_id,
-            "failed",
-            feedback=f"runner error: {e}\n{traceback.format_exc()}",
-        )
-
-
-
-from fastapi import Header
-
-# --- Session validation (helper + route) ---
+# NEW: core session validation helper (required by route and Depends)
 def _validate_session(token: str):
     """Core session validation logic used by both the route and Depends()"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     try:
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now_iso_str = datetime.datetime.utcnow().isoformat() + "Z"
         c.execute("""
             SELECT s.token, s.is_active as session_active, s.expires_at, 
                    u.id, u.username, u.email, u.role, u.first_name, u.last_name, u.is_active as user_active
@@ -916,7 +914,7 @@ def _validate_session(token: str):
             return {"valid": False, "message": "Invalid session"}
 
         d = dict(row)
-        if (d["session_active"] != 1 or d["user_active"] != 1 or now > d["expires_at"]):
+        if (d["session_active"] != 1 or d["user_active"] != 1 or now_iso_str > d["expires_at"]):
             return {"valid": False, "message": "Session expired or inactive"}
 
         return {
@@ -964,43 +962,6 @@ async def get_current_user(request: Request):
 
 # Folders endpoints
 @app.get("/api/v1/folders")
-async def get_lecturer_folders(current_user: dict = Depends(get_current_user)):
-    """Get all folders created by the current lecturer"""
-    if current_user["role"] != "lecturer":
-        raise HTTPException(status_code=403, detail="Only lecturers can access folders")
-    
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    try:
-        c.execute("""
-            SELECT id, code, name, lecturer_id, created_at
-            FROM subjects
-            ORDER BY code
-        """)
-        return _dict_rows(c)
-    finally:
-        conn.close()
-
-@app.get("/api/v1/students")
-def list_students(current_user: dict = Depends(get_current_user)):
-    """List all active students (lecturer-only)."""
-    _ensure_lecturer(current_user)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    try:
-        c.execute("""
-            SELECT id, username, email, first_name, last_name, created_at
-            FROM users
-            WHERE role = 'student' AND is_active = 1
-            ORDER BY created_at DESC
-        """)
-        return _dict_rows(c)
-    finally:
-        conn.close()
-
-@app.get("/api/v1/folders")
 def list_folders(current_user: dict = Depends(get_current_user)):
     """List assignments (folders) owned by the current lecturer."""
     _ensure_lecturer(current_user)
@@ -1014,6 +975,27 @@ def list_folders(current_user: dict = Depends(get_current_user)):
             FROM folders
             WHERE lecturer_id = ?
             ORDER BY COALESCE(updated_at, created_at) DESC
+        """, (current_user["id"],))
+        return _dict_rows(c)
+    finally:
+        conn.close()
+
+@app.get("/api/v1/student/folders")
+def get_student_folders(current_user: dict = Depends(get_current_user)):
+    """List folders (assignments) assigned to the current student and visible."""
+    if current_user["role"] != "student":
+        raise HTTPException(status_code=403, detail="Only students can access their assignments")
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT f.*
+            FROM folders f
+            JOIN folder_assignments fa ON fa.folder_id = f.id
+            WHERE fa.student_id = ?
+              AND LOWER(f.status) IN ('published','active')
+            ORDER BY COALESCE(f.due_date, f.created_at) ASC
         """, (current_user["id"],))
         return _dict_rows(c)
     finally:
@@ -1035,14 +1017,15 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
                                  created_at, updated_at, lecturer_id, subject_code)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            payload.name.strip(),
-            (payload.description or None),
-            (payload.due_date or None),
-            int(payload.max_points or 100),
-            (payload.status or "draft"),
+            folder.name.strip(),
+            (folder.description or None),
+            (folder.due_date or None),
+            int(folder.max_points or 100),
+            (folder.status or "draft"),
             now,
             now,
             current_user["id"],
+            folder.subject_code.strip(),
         ))
         folder_id = c.lastrowid
 
@@ -1058,7 +1041,6 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
 
         conn.commit()
 
-        # Return the inserted object directly (avoid SELECT that was erroring)
         return {
             "id": folder_id,
             "name": folder.name,
@@ -1069,6 +1051,7 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
             "created_at": now,
             "updated_at": now,
             "lecturer_id": current_user["id"],
+            "subject_code": folder.subject_code,
             "assigned_students_count": assigned,
         }
 
@@ -1077,7 +1060,6 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
         raise HTTPException(500, f"Database error: {str(e)}")
     finally:
         conn.close()
-
 
 @app.put("/api/v1/folders/{folder_id}")
 def update_folder(folder_id: int, payload: FolderUpdate, current_user: dict = Depends(get_current_user)):
@@ -1922,7 +1904,7 @@ async def enroll_student(enrollment: EnrollmentCreate, current_user: dict = Depe
                     logger.info(f"Created submission repo for {current_user['username']}: {assignment_path}")
                 else:
                     logger.warning(f"Failed to create submission repo for {current_user['username']}: {repo_result.get('error')}")
-                    
+                        
         except Exception as e:
             logger.error(f"Error creating student submission repositories for {current_user['username']}: {e}")
         
@@ -2056,22 +2038,31 @@ async def enroll_student_admin(subject_id: int, student_id: int, semester: str, 
 # API endpoints for subjects
 @app.get("/api/v1/subjects")
 async def get_all_subjects(current_user: dict = Depends(get_current_user)):
-    """Get all subjects"""
+    """Get subjects. Lecturers: subjects they teach. Students: subjects from assigned active folders."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     try:
-        # Only folders assigned to this student and visible (published/active)
-        c.execute("""
-            SELECT f.*
-            FROM folders f
-            JOIN folder_assignments fa ON fa.folder_id = f.id
-            WHERE fa.student_id = ?
-              AND LOWER(f.status) IN ('published','active')
-            ORDER BY COALESCE(f.due_date, f.created_at) ASC
-        """, (current_user["id"],))
-        rows = c.fetchall()
-        return [dict(r) for r in rows]
+        if current_user["role"] == "lecturer":
+            c.execute("""
+                SELECT id, code, name, lecturer_id, created_at
+                FROM subjects
+                WHERE lecturer_id = ?
+                ORDER BY code
+            """, (current_user["id"],))
+            return _dict_rows(c)
+        else:
+            # Student fallback (keep behavior similar to /api/v1/student/subjects)
+            c.execute("""
+                SELECT DISTINCT s.id, s.code, s.name, s.lecturer_id, s.created_at
+                FROM subjects s
+                JOIN folders f ON f.subject_code = s.code
+                JOIN folder_assignments fa ON fa.folder_id = f.id
+                WHERE fa.student_id = ?
+                  AND LOWER(f.status) IN ('published','active')
+                ORDER BY s.code
+            """, (current_user["id"],))
+            return _dict_rows(c)
     finally:
         conn.close()
 
