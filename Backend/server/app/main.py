@@ -216,7 +216,7 @@ def init_db():
                 "password": "alicepass123",
                 "first_name": "Alice",
                 "last_name": "Smith",
-                "assigned_subjects": ["INFS 8586", "COMP 0067"]
+                "assigned_subjects": ["INFS_8586", "COMP_0067"]
             },
             {
                 "username": "student_bob",
@@ -224,7 +224,7 @@ def init_db():
                 "password": "bobpass123",
                 "first_name": "Bob",
                 "last_name": "Johnson",
-                "assigned_subjects": ["COMP 0420", "COMP 5055"]
+                "assigned_subjects": ["COMP_0420", "COMP_5055"]
             },
             {
                 "username": "student_carol",
@@ -232,7 +232,7 @@ def init_db():
                 "password": "carolpass123",
                 "first_name": "Carol",
                 "last_name": "Williams",
-                "assigned_subjects": ["COMP 0067", "INFS 8586", "COMP 0420"]
+                "assigned_subjects": ["COMP_0067", "INFS 8586", "COMP_0420"]
             }
         ]
 
@@ -341,7 +341,7 @@ def init_db():
                 "first_name": "John",
                 "last_name": "Smith",
                 "subjects": [
-                    {"code": "COMP 0067", "name": "Database and Design"}
+                    {"code": "COMP_0067", "name": "Database and Design"}
                 ]
             },
             {
@@ -351,7 +351,7 @@ def init_db():
                 "first_name": "Sarah",
                 "last_name": "Johnson",
                 "subjects": [
-                    {"code": "COMP 0420", "name": "Programming Techniques"}
+                    {"code": "COMP_0420", "name": "Programming Techniques"}
                 ]
             },
             {
@@ -361,8 +361,8 @@ def init_db():
                 "first_name": "Robert",
                 "last_name": "Williams",
                 "subjects": [
-                    {"code": "INFS 8586", "name": "Object Oriented Programming"},
-                    {"code": "COMP 5055", "name": "Software Engineering"}
+                    {"code": "INFS_8586", "name": "Object Oriented Programming"},
+                    {"code": "COMP_5055", "name": "Software Engineering"}
                 ]
             }
         ]
