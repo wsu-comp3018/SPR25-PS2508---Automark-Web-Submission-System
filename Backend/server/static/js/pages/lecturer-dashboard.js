@@ -39,9 +39,14 @@ if (typeof window === 'undefined') {
         let allSubmissions = [];
         let expandedFolders = new Set();
         let filteredStudents = [];
-        let currentEditingAssignment = null; // Add this to global scope
+        let currentEditingAssignment = null;
+        let selectedAssignmentFiles = []; // Add for lecturer files
 
-        // Utility functions
+        // NEW: track existing & removed lecturer files during edit
+let existingLecturerFiles = [];
+let removedLecturerFileIds = [];
+
+// Utility functions
         function showNotification(message, type = 'success') {
             const notification = $('notification');
             if (!notification) return;
@@ -357,6 +362,9 @@ if (typeof window === 'undefined') {
                         <button onclick="createAssignmentForSubject('${subject.code}')" class="success" title="Create New Assignment">
                             + Assignment
                         </button>
+                        <button onclick="openEnrollStudentsModal(${subject.id})" class="ghost" title="Enroll Students">
+                            Enroll Students
+                        </button>
                         <button onclick="viewSubjectSubmissions('${subject.id}')" class="ghost" title="View All Submissions">
                             ${subjectAssignments.reduce((sum, a) => sum + (allSubmissions.filter(s => s.folder_id === a.id).length), 0)} Submissions
                         </button>
@@ -592,11 +600,28 @@ if (typeof window === 'undefined') {
         if (!subject) {
             throw new Error('Invalid subject selected. Please refresh and try again.');
         }
+
+        // Process lecturer files
+        const filesPayload = [];
+        for (const file of selectedAssignmentFiles) {
+            try {
+                const base64 = await readFileAsBase64(file);
+                filesPayload.push({
+                    name: file.name,
+                    type: file.type,
+                    size: file.size,
+                    content: base64
+                });
+            } catch (error) {
+                console.warn(`Failed to process file ${file.name}:`, error);
+            }
+        }
         
         console.log('Creating assignment with validated data:', {
             name: rawName,
             subject_code: subjectCode,
-            lecturer_id: currentUser.id
+            lecturer_id: currentUser.id,
+            files_count: filesPayload.length
         });
         
         // Prepare assignment data
@@ -607,14 +632,15 @@ if (typeof window === 'undefined') {
             max_points: maxPoints,
             status: status || 'draft',
             subject_code: subject.code,
-            student_ids: []
+            student_ids: [],
+            files: filesPayload
         };
         
         console.log('Sending assignment data to API:', assignmentData);
         
         // Create assignment via API with timeout
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+        const timeoutId = setTimeout(() => controller.abort(), 15000); // Extended timeout for file uploads
         
         const newAssignment = await apiCall('/folders', {
             method: 'POST',
@@ -633,12 +659,17 @@ if (typeof window === 'undefined') {
             // Auto-expand the subject that contains the new assignment
             expandedFolders.add(`subject_${subject.id}`);
             
+            // Clear selected files
+            selectedAssignmentFiles = [];
+            updateAssignmentFileList();
+            
             // Immediate UI update with new data
             renderFolderList();
             updateStatistics();
             
             // Show success message
-            showNotification(`Assignment "${rawName}" created successfully!`, 'success');
+            const fileMsg = newAssignment.lecturer_files_count > 0 ? ` (${newAssignment.lecturer_files_count} files uploaded)` : '';
+            showNotification(`Assignment "${rawName}" created successfully!${fileMsg}`, 'success');
             
             // Close modal and reset form
             closeModal('createAssignmentModal');
@@ -740,10 +771,16 @@ if (typeof window === 'undefined') {
         inputs.forEach(input => {
             if (input.type === 'checkbox') {
                 input.checked = false;
+            } else if (input.type === 'file') {
+                input.value = '';
             } else {
                 input.value = '';
             }
         });
+
+        // Clear selected files
+        selectedAssignmentFiles = [];
+        updateAssignmentFileList();
     }
 }
 
@@ -876,6 +913,17 @@ window.deleteAssignment = deleteAssignment;
                     }
                 });
             });
+            
+            // Enroll Students modal events
+            const enrollModal = $('enrollStudentsModal');
+            if (enrollModal) {
+                const x = enrollModal.querySelector('.close');
+                if (x) x.addEventListener('click', () => closeModal('enrollStudentsModal'));
+            }
+            const cancelEnrollBtn = $('cancelEnrollBtn');
+            if (cancelEnrollBtn) cancelEnrollBtn.addEventListener('click', () => closeModal('enrollStudentsModal'));
+            const saveEnrollBtn = $('saveEnrollBtn');
+            if (saveEnrollBtn) saveEnrollBtn.addEventListener('click', enrollSelectedStudents);
         }
 
         // Global functions for HTML onclick handlers
@@ -890,28 +938,6 @@ window.deleteAssignment = deleteAssignment;
         window.filterStudents = filterStudents;
         window.closeModal = closeModal;
 
-        window.editSubject = (subjectId) => {
-            const subject = lecturerSubjects.find(s => s.id === subjectId);
-            if (subject) {
-                showNotification(`Edit subject feature for ${subject.code} coming soon`, 'info');
-            }
-        };
-
-        window.viewSubjectSubmissions = (subjectId) => {
-            const subject = lecturerSubjects.find(s => s.id === subjectId);
-            if (subject) {
-                const subjectAssignments = allFolders.filter(folder => 
-                    folder.subject_code === subject.code
-                );
-                
-                const subjectSubmissions = allSubmissions.filter(sub => 
-                    subjectAssignments.some(a => a.id === sub.folder_id)
-                );
-                
-                showNotification(`Viewing ${subjectSubmissions.length} submissions for ${subject.code}`, 'info');
-            }
-        };
-
         // Close modal when clicking outside
         window.onclick = function(event) {
             const modals = document.getElementsByClassName('modal');
@@ -922,89 +948,185 @@ window.deleteAssignment = deleteAssignment;
             }
         };
 
-        // Initialize when DOM is loaded
-        document.addEventListener('DOMContentLoaded', async () => {
-            console.log('📄 DOM Content Loaded - Lecturer dashboard initializing...');
-            
-            // Add immediate visual feedback
-            const body = document.body;
-            if (body) {
-                body.style.opacity = '0.5';
-                console.log('✅ Body element found, setting loading state');
-            }
-            
-            try {
-                // Check authentication first
-                console.log('🔐 Step 1: Checking authentication...');
-                const isAuthenticated = await checkAuth();
-                if (!isAuthenticated) {
-                    console.log('❌ Authentication failed, redirecting...');
-                    return;
-                }
-                
-                console.log('✅ Authentication successful');
-                
-                // Update UI with user info
-                const lecturerNameEl = $('lecturerName');
-                if (lecturerNameEl) {
-                    const displayName = currentUser.firstName || currentUser.username || 'Lecturer';
-                    lecturerNameEl.textContent = `Hi, ${displayName}`;
-                    console.log('✅ Updated lecturer name display');
-                }
-                
-                // Setup event listeners
-                console.log('🔧 Step 2: Setting up event listeners...');
-                setupEventListeners();
-                console.log('✅ Event listeners setup complete');
-                
-                // Load all data
-                console.log('📊 Step 3: Loading dashboard data...');
-                await loadAllData();
-                console.log('✅ Data loading complete');
-                
-                console.log('🎉 Lecturer dashboard initialized successfully');
-                
-            } catch (error) {
-                console.error('❌ Error initializing dashboard:', error);
-                
-                // Show detailed error information
-                showNotification(`Dashboard initialization failed: ${error.message}`, 'error');
-                
-                // Show error state with more details
-                if (body) {
-                    body.innerHTML = `
-                        <div style="padding: 40px; text-align: center; max-width: 600px; margin: 0 auto;">
-                            <h2 style="color: #e74c3c; margin-bottom: 20px;">Dashboard Loading Error</h2>
-                            <p style="margin-bottom: 20px; color: #666;">
-                                There was an error loading the lecturer dashboard. This could be due to:
-                            </p>
-                            <ul style="text-align: left; margin: 20px 0; color: #666;">
-                                <li>Network connectivity issues</li>
-                                <li>Server unavailable</li>
-                                <li>Authentication problems</li>
-                                <li>Database connection issues</li>
-                            </ul>
-                            <div style="margin: 20px 0;">
-                                <strong>Error details:</strong><br>
-                                <code style="background: #f8f9fa; padding: 8px; border-radius: 4px; display: inline-block; margin-top: 8px;">
-                                    ${error.message}
-                                </code>
-                            </div>
-                            <div style="margin-top: 30px;">
-                                <button onclick="location.reload()" style="margin-right: 10px;">Reload Page</button>
-                                <button onclick="logout()" class="ghost">Back to Login</button>
-                            </div>
-                        </div>
-                    `;
-                }
-                
-            } finally {
-                // Always remove loading state
-                if (body) {
-                    body.style.opacity = '1';
-                }
-            }
-        });
+        // --- Enroll Students Modal logic ---
+function renderEnrollStudentList(precheckedIds = [], query = '') {
+    const box = $('enrollStudentList');
+    if (!box) return;
+    const q = (query || '').toLowerCase();
+    const list = allStudents.filter(s => {
+        const name = `${s.first_name || ''} ${s.last_name || ''}`.toLowerCase();
+        const email = (s.email || '').toLowerCase();
+        const username = (s.username || '').toLowerCase();
+        return !q || name.includes(q) || email.includes(q) || username.includes(q);
+    });
+    box.innerHTML = '';
+    list.forEach(s => {
+        const div = document.createElement('div');
+        div.className = 'student-item';
+        const checked = precheckedIds.includes(s.id) ? 'checked' : '';
+        div.innerHTML = `
+            <input type="checkbox" id="enroll-${s.id}" value="${s.id}" ${checked}>
+            <label for="enroll-${s.id}">
+                ${s.first_name || s.username} ${s.last_name || ''}
+                <span class="small">(${s.email})</span>
+            </label>
+        `;
+        box.appendChild(div);
+    });
+}
+
+async function openEnrollStudentsModal(subjectId) {
+    try {
+        const subject = lecturerSubjects.find(s => s.id == subjectId);
+        if (!subject) {
+            showNotification('Subject not found', 'error');
+            return;
+        }
+        // Default semester/year
+        const y = new Date().getFullYear();
+        if ($('enrollYear')) $('enrollYear').value = y;
+        if ($('enrollSemester')) $('enrollSemester').value = 'SPR';
+        if ($('enrollSubjectId')) $('enrollSubjectId').value = subjectId;
+
+        // Fetch currently enrolled students for pre-check
+        let prechecked = [];
+        try {
+            const enrolled = await apiCall(`/subjects/${subjectId}/students`);
+            prechecked = (enrolled || []).map(e => e.student_id);
+        } catch {
+            prechecked = [];
+        }
+
+        renderEnrollStudentList(prechecked, '');
+
+        // Wire search
+        const search = $('enrollStudentSearch');
+        if (search) {
+            search.value = '';
+            search.oninput = () => renderEnrollStudentList(prechecked, search.value);
+        }
+
+        // Show modal
+        const modal = $('enrollStudentsModal');
+        if (modal) modal.style.display = 'flex';
+    } catch (e) {
+        showNotification('Failed to open enroll modal', 'error');
+    }
+}
+
+async function enrollSelectedStudents() {
+    const subjectId = parseInt($('enrollSubjectId')?.value || '0');
+    const semester = $('enrollSemester')?.value || 'SPR';
+    const year = parseInt($('enrollYear')?.value || `${new Date().getFullYear()}`);
+    if (!subjectId) {
+        showNotification('Subject missing', 'error');
+        return;
+    }
+    const checked = Array.from(document.querySelectorAll('#enrollStudentList input[type="checkbox"]:checked'))
+        .map(cb => parseInt(cb.value));
+    if (checked.length === 0) {
+        showNotification('Select at least one student', 'warning');
+        return;
+    }
+    try {
+        // Enroll one by one (API expects query params)
+        for (const sid of checked) {
+            await apiCall(`/subjects/${subjectId}/enroll-student?student_id=${sid}&semester=${encodeURIComponent(semester)}&year=${year}`, {
+                method: 'POST'
+            });
+        }
+        showNotification(`Enrolled ${checked.length} student(s)`, 'success');
+        // Refresh data so student counts and UI stay in sync
+        await loadAllData();
+        closeModal('enrollStudentsModal');
+    } catch (e) {
+        showNotification(`Enrollment failed: ${e.message}`, 'error');
+    }
+}
+
+// Initialize when DOM is loaded
+document.addEventListener('DOMContentLoaded', async () => {
+    console.log('📄 DOM Content Loaded - Lecturer dashboard initializing...');
+    
+    // Add immediate visual feedback
+    const body = document.body;
+    if (body) {
+        body.style.opacity = '0.5';
+        console.log('✅ Body element found, setting loading state');
+    }
+    
+    try {
+        // Check authentication first
+        console.log('🔐 Step 1: Checking authentication...');
+        const isAuthenticated = await checkAuth();
+        if (!isAuthenticated) {
+            console.log('❌ Authentication failed, redirecting...');
+            return;
+        }
+        
+        console.log('✅ Authentication successful');
+        
+        // Update UI with user info
+        const lecturerNameEl = $('lecturerName');
+        if (lecturerNameEl) {
+            const displayName = currentUser.firstName || currentUser.username || 'Lecturer';
+            lecturerNameEl.textContent = `Hi, ${displayName}`;
+            console.log('✅ Updated lecturer name display');
+        }
+        
+        // Setup event listeners
+        console.log('🔧 Step 2: Setting up event listeners...');
+        setupEventListeners();
+        console.log('✅ Event listeners setup complete');
+        
+        // Load all data
+        console.log('📊 Step 3: Loading dashboard data...');
+        await loadAllData();
+        console.log('✅ Data loading complete');
+        
+        console.log('🎉 Lecturer dashboard initialized successfully');
+        
+    } catch (error) {
+        console.error('❌ Error initializing dashboard:', error);
+        
+        // Show detailed error information
+        showNotification(`Dashboard initialization failed: ${error.message}`, 'error');
+        
+        // Show error state with more details
+        if (body) {
+            body.innerHTML = `
+                <div style="padding: 40px; text-align: center; max-width: 600px; margin: 0 auto;">
+                    <h2 style="color: #e74c3c; margin-bottom: 20px;">Dashboard Loading Error</h2>
+                    <p style="margin-bottom: 20px; color: #666;">
+                        There was an error loading the lecturer dashboard. This could be due to:
+                    </p>
+                    <ul style="text-align: left; margin: 20px 0; color: #666;">
+                        <li>Network connectivity issues</li>
+                        <li>Server unavailable</li>
+                        <li>Authentication problems</li>
+                        <li>Database connection issues</li>
+                    </ul>
+                    <div style="margin: 20px 0;">
+                        <strong>Error details:</strong><br>
+                        <code style="background: #f8f9fa; padding: 8px; border-radius: 4px; display: inline-block; margin-top: 8px;">
+                            ${error.message}
+                        </code>
+                    </div>
+                    <div style="margin-top: 30px;">
+                        <button onclick="location.reload()" style="margin-right: 10px;">Reload Page</button>
+                        <button onclick="logout()" class="ghost">Back to Login</button>
+                    </div>
+                </div>
+            `;
+        }
+        
+    } finally {
+        // Always remove loading state
+        if (body) {
+            body.style.opacity = '1';
+        }
+    }
+});
         // Define deleteAssignment function BEFORE it's referenced
         async function deleteAssignment(assignmentId) {
             console.log('🗑️ Delete assignment called for ID:', assignmentId);
@@ -1095,6 +1217,13 @@ window.deleteAssignment = deleteAssignment;
                     modal.style.display = 'flex';
                     console.log('✅ Modal displayed');
                 }
+                
+                // Load existing lecturer files
+                fetchLecturerFiles(assignmentId).then(files => {
+                    existingLecturerFiles = files;
+                    removedLecturerFileIds = [];
+                    renderExistingLecturerFiles();
+                });
                 
             } catch (error) {
                 console.error('❌ Error opening edit modal:', error);
@@ -1275,13 +1404,38 @@ window.deleteAssignment = deleteAssignment;
                 // Collect selected students
                 const studentCheckboxes = document.querySelectorAll('#assignmentStudentList input[type="checkbox"]:checked');
                 const selectedStudentIds = Array.from(studentCheckboxes).map(cb => parseInt(cb.value));
+
+                // Process lecturer files
+                const filesPayload = [];
+                for (const file of selectedAssignmentFiles) {
+                    try {
+                        const base64 = await readFileAsBase64(file);
+                        filesPayload.push({
+                            name: file.name,
+                            type: file.type,
+                            size: file.size,
+                            content: base64
+                        });
+                    } catch (error) {
+                        console.warn(`Failed to process file ${file.name}:`, error);
+                    }
+                }
                 
                 console.log('Updating assignment with data:', {
                     id: currentEditingAssignment.id,
                     name: rawName,
                     subject_code: subjectCode,
-                    student_count: selectedStudentIds.length
+                    student_count: selectedStudentIds.length,
+                    new_files_count: filesPayload.length
                 });
+                
+                // Replacement rule: if deleting, must add at least one new file
+        if (removedLecturerFileIds.length > 0 && selectedAssignmentFiles.length === 0) {
+            showNotification('You removed file(s). Add a replacement before saving.', 'warning');
+            isCreatingAssignment = false;
+            if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Update Assignment'; }
+            return;
+        }
                 
                 // Prepare update data
                 const updateData = {
@@ -1290,14 +1444,16 @@ window.deleteAssignment = deleteAssignment;
                     due_date: dueDate || null,
                     max_points: maxPoints,
                     status: status,
-                    student_ids: selectedStudentIds
+                    student_ids: selectedStudentIds,
+                    files: filesPayload.length ? filesPayload : undefined,
+                    remove_file_ids: removedLecturerFileIds.length ? removedLecturerFileIds : undefined
                 };
                 
                 console.log('Sending update data to API:', updateData);
                 
                 // Update assignment via API with timeout
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 15000);
+                const timeoutId = setTimeout(() => controller.abort(), 20000); // Extended timeout for file uploads
                 
                 const updatedAssignment = await apiCall(`/folders/${currentEditingAssignment.id}`, {
                     method: 'PUT',
@@ -1319,12 +1475,17 @@ window.deleteAssignment = deleteAssignment;
                     // Auto-expand the subject that contains the updated assignment
                     expandedFolders.add(`subject_${subject.id}`);
                     
+                    // Clear selected files
+                    selectedAssignmentFiles = [];
+                    updateAssignmentFileList();
+                    
                     // Immediate UI update
                     renderFolderList();
                     updateStatistics();
                     
                     // Show success message
-                    showNotification(`Assignment "${rawName}" updated successfully!`, 'success');
+                    const fileMsg = filesPayload.length > 0 ? ` (${filesPayload.length} new files added)` : '';
+                    showNotification(`Assignment "${rawName}" updated successfully!${fileMsg}`, 'success');
                     
                     // Close modal and reset
                     closeEditModal();
@@ -1358,6 +1519,7 @@ window.deleteAssignment = deleteAssignment;
         // Define closeEditModal function
         function closeEditModal() {
             currentEditingAssignment = null;
+            selectedAssignmentFiles = []; // Clear selected files
             
             // Reset modal title and button
             const modalTitle = document.querySelector('#createAssignmentModal .modal-header h2');
@@ -1379,98 +1541,98 @@ window.deleteAssignment = deleteAssignment;
             console.log('Edit modal closed and reset');
         }
 
-        // Global functions for HTML onclick handlers - NOW THEY'RE DEFINED
-        window.createAssignmentForSubject = createAssignmentForSubject;
-        window.toggleSubjectExpansion = toggleSubjectExpansion;
-        window.deleteAssignment = deleteAssignment; // NOW this is defined
-        window.editAssignment = editAssignment;
-        window.updateAssignment = updateAssignment;
-        window.closeEditModal = closeEditModal;
-        window.viewSubmissions = viewSubmissions;
-        window.gradeSubmission = (id) => showNotification('Grading feature coming soon', 'info');
-        window.filterStudents = filterStudents;
-        window.closeModal = closeModal;
+        // File handling utilities
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
 
-        // Initialize when DOM is loaded
-        document.addEventListener('DOMContentLoaded', async () => {
-            console.log('📄 DOM Content Loaded - Lecturer dashboard initializing...');
-            
-            // Add immediate visual feedback
-            const body = document.body;
-            if (body) {
-                body.style.opacity = '0.5';
-                console.log('✅ Body element found, setting loading state');
+        function readFileAsBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        function updateAssignmentFileList() {
+            const fileList = $('assignmentFileList');
+            if (!fileList) return;
+
+            if (selectedAssignmentFiles.length === 0) {
+                fileList.style.display = 'none';
+                return;
             }
-            
-            try {
-                // Check authentication first
-                console.log('🔐 Step 1: Checking authentication...');
-                const isAuthenticated = await checkAuth();
-                if (!isAuthenticated) {
-                    console.log('❌ Authentication failed, redirecting...');
-                    return;
-                }
-                
-                console.log('✅ Authentication successful');
-                
-                // Update UI with user info
-                const lecturerNameEl = $('lecturerName');
-                if (lecturerNameEl) {
-                    const displayName = currentUser.firstName || currentUser.username || 'Lecturer';
-                    lecturerNameEl.textContent = `Hi, ${displayName}`;
-                    console.log('✅ Updated lecturer name display');
-                }
-                
-                // Setup event listeners
-                console.log('🔧 Step 2: Setting up event listeners...');
-                setupEventListeners();
-                console.log('✅ Event listeners setup complete');
-                
-                // Load all data
-                console.log('📊 Step 3: Loading dashboard data...');
-                await loadAllData();
-                console.log('✅ Data loading complete');
-                
-                console.log('🎉 Lecturer dashboard initialized successfully');
-                
-            } catch (error) {
-                console.error('❌ Error initializing dashboard:', error);
-                
-                // Show detailed error information
-                showNotification(`Dashboard initialization failed: ${error.message}`, 'error');
-                
-                // Show error state with more details
-                if (body) {
-                    body.innerHTML = `
-                        <div style="padding: 40px; text-align: center; max-width: 600px; margin: 0 auto;">
-                            <h2 style="color: #e74c3c; margin-bottom: 20px;">Dashboard Loading Error</h2>
-                            <p style="margin-bottom: 20px; color: #666;">
-                                There was an error loading the lecturer dashboard. This could be due to:
-                            </p>
-                            <ul style="text-align: left; margin: 20px 0; color: #666;">
-                                <li>Network connectivity issues</li>
-                                <li>Server unavailable</li>
-                                <li>Authentication problems</li>
-                                <li>Database connection issues</li>
-                            </ul>
-                            <div style="margin: 20px 0;">
-                                <strong>Error details:</strong><br>
-                                <code style="background: #f8f9fa; padding: 8px; border-radius: 4px; display: inline-block; margin-top: 8px;">
-                                    ${error.message}
-                                </code>
-                            </div>
-                            <div style="margin-top: 30px;">
-                                <button onclick="location.reload()" style="margin-right: 10px;">Reload Page</button>
-                                <button onclick="logout()" class="ghost">Back to Login</button>
-                            </div>
-                        </div>
-                    `;
-                }
-                
-            } finally {
-                // Always remove loading state
-                if (body) {
-                    body.style.opacity = '1';
-                }
-            }
-        });
+
+            fileList.style.display = 'block';
+            fileList.innerHTML = selectedAssignmentFiles.map((file, index) => `
+                <div class="file-item">
+                    <span class="file-name">${file.name}</span>
+                    <span class="file-size">${formatFileSize(file.size)}</span>
+                    <button type="button" onclick="removeAssignmentFile(${index})" class="file-remove" title="Remove file">×</button>
+                </div>
+            `).join('');
+        }
+
+        window.removeAssignmentFile = function(index) {
+            selectedAssignmentFiles.splice(index, 1);
+            updateAssignmentFileList();
+        };
+
+        async function fetchLecturerFiles(assignmentId) {
+    try {
+        return await apiCall(`/folders/${assignmentId}/lecturer-files`);
+    } catch {
+        return [];
+    }
+}
+
+function renderExistingLecturerFiles() {
+    const box = $('existingLecturerFiles');
+    const hint = $('replacementHint');
+    if (!box) return;
+    if (existingLecturerFiles.length === 0) {
+        box.style.display = 'none';
+        if (hint) hint.style.display = removedLecturerFileIds.length ? 'block' : 'none';
+        return;
+    }
+    box.style.display = 'block';
+    box.innerHTML = existingLecturerFiles.map(f => `
+      <div class="file-item" data-existing-file="${f.id}">
+        <span class="file-name">${f.name}</span>
+        <span class="file-size">${formatFileSize(f.size)}</span>
+        <button type="button" class="file-remove" onclick="removeExistingLecturerFile(${f.id})" title="Remove file">×</button>
+      </div>
+    `).join('');
+    if (hint) {
+        hint.style.display = removedLecturerFileIds.length ? 'block' : 'none';
+    }
+}
+
+window.removeExistingLecturerFile = function(id) {
+    // mark for removal
+    if (!removedLecturerFileIds.includes(id)) removedLecturerFileIds.push(id);
+    existingLecturerFiles = existingLecturerFiles.filter(f => f.id !== id);
+    renderExistingLecturerFiles();
+};
+
+// Hook file input to capture new files (extend existing code)
+const assignmentFilesInput = document.getElementById('assignmentFiles');
+if (assignmentFilesInput) {
+    assignmentFilesInput.addEventListener('change', (e) => {
+        const files = Array.from(e.target.files || []);
+        if (files.length) {
+            selectedAssignmentFiles.push(...files);
+            updateAssignmentFileList();
+        }
+    });
+}
+
+// Ensure initial render of existing files list hidden
+document.addEventListener('DOMContentLoaded', () => {
+    renderExistingLecturerFiles();
+});

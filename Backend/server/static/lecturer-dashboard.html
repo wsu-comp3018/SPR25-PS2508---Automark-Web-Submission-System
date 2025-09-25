@@ -118,6 +118,24 @@
             <option value="closed">Closed</option>
           </select>
         </div>
+
+        <div class="form-group">
+          <label for="assignmentFiles">Marker Script</label>
+          <input type="file" id="assignmentFiles" multiple accept="*/*">
+          <div class="file-info">
+            <small class="muted">Upload / replace MarkerScript.sh (grading script).</small>
+          </div>
+          <!-- NEW: existing lecturer files list (edit mode) -->
+          <div id="existingLecturerFiles" class="file-list" style="display:none;margin-top:8px">
+            <!-- Populated by JS -->
+          </div>
+          <div id="assignmentFileList" class="file-list" style="display:none;">
+            <!-- Selected new files -->
+          </div>
+          <small id="replacementHint" class="muted" style="display:none;">
+            You removed existing file(s). Add at least one replacement before saving.
+          </small>
+        </div>
         
         <div class="form-group">
           <input type="text" id="assignmentStudentSearch" placeholder="Search students..." oninput="filterStudents()">
@@ -130,6 +148,40 @@
       <div class="modal-actions">
         <button id="cancelAssignmentBtn" class="ghost">Cancel</button>
         <button id="saveAssignmentBtn" class="success">Create Assignment</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Enroll Students Modal -->
+  <div id="enrollStudentsModal" style="display:none;" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Enroll Students to Subject</h2>
+        <span class="close">&times;</span>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="enrollSubjectId" />
+        <div class="form-group">
+          <label for="enrollSemester">Semester</label>
+          <select id="enrollSemester">
+            <option value="SPR">SPR</option>
+            <option value="AUT">AUT</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="enrollYear">Year</label>
+          <input type="number" id="enrollYear" min="2020" />
+        </div>
+        <div class="form-group">
+          <input type="text" id="enrollStudentSearch" placeholder="Search students...">
+          <div class="student-list" id="enrollStudentList">
+            <!-- Students checkboxes populated by JS -->
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="cancelEnrollBtn" class="ghost">Cancel</button>
+        <button id="saveEnrollBtn" class="success">Enroll Selected</button>
       </div>
     </div>
   </div>

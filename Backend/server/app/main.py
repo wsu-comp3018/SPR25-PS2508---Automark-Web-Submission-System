@@ -17,6 +17,7 @@ import json
 from contextlib import asynccontextmanager
 import threading, time, traceback 
 import base64
+import random
 
 # SSH user management
 from ssh_user_manager import create_ssh_user_for_registration
@@ -42,20 +43,6 @@ try:
     import docker  # Python Docker SDK
 except Exception:
     docker = None
-
-# Single source for default student → subjects mapping
-DEFAULT_ASSIGNED_SUBJECTS: Dict[str, List[str]] = {
-    "student_alice": ["INFS 8586", "COMP 0067"],
-    "student_bob": ["COMP 0420", "COMP 5055"],
-    "student_carol": ["COMP 0067", "INFS 8586", "COMP 0420"],
-}
-
-def get_assigned_subject_codes_for_username(username: str) -> List[str]:
-    codes = DEFAULT_ASSIGNED_SUBJECTS.get(username)
-    if codes:
-        return codes
-    # Fallback: no subjects unless explicitly mapped
-    return []
 
 def init_db():
     try:
@@ -179,6 +166,10 @@ def init_db():
             "status": "TEXT DEFAULT 'submitted'",
             "graded_at": "TEXT",
         })
+        # NEW: add lecturer_file_ids column to folders if missing
+        ensure_columns("folders", {
+            "lecturer_file_ids": "TEXT"   # JSON array of file IDs (marker / reference files)
+        })
 
         print("📝 INIT_DB: Creating subjects table...")
         c.execute("""
@@ -208,7 +199,6 @@ def init_db():
         
         print("👨‍🎓 INIT_DB: Creating hardcoded students...")
         now = now_iso()
-        # Hardcoded student information with shuffled subject assignments
         students = [
             {
                 "username": "student_alice",
@@ -216,7 +206,6 @@ def init_db():
                 "password": "alicepass123",
                 "first_name": "Alice",
                 "last_name": "Smith",
-                "assigned_subjects": ["INFS_8586", "COMP_0067"]
             },
             {
                 "username": "student_bob",
@@ -224,7 +213,6 @@ def init_db():
                 "password": "bobpass123",
                 "first_name": "Bob",
                 "last_name": "Johnson",
-                "assigned_subjects": ["COMP_0420", "COMP_5055"]
             },
             {
                 "username": "student_carol",
@@ -232,7 +220,6 @@ def init_db():
                 "password": "carolpass123",
                 "first_name": "Carol",
                 "last_name": "Williams",
-                "assigned_subjects": ["COMP_0067", "INFS 8586", "COMP_0420"]
             }
         ]
 
@@ -257,7 +244,6 @@ def init_db():
                     ))
                     student_id = c.lastrowid
                     print(f"✅ Created student: {student['username']} (ID: {student_id})")
-                    print(f"   📚 Assigned to subjects: {', '.join(student['assigned_subjects'])}")
                     
                     # Create SSH user for student
                     try:
@@ -268,19 +254,6 @@ def init_db():
                             print(f"⚠️  SSH user creation failed for {student['username']}: {ssh_result.get('error')}")
                     except Exception as e:
                         print(f"⚠️  SSH user creation error for {student['username']}: {e}")
-                    
-                    # Auto-assign student to assignments for their specific subjects only
-                    if student["assigned_subjects"]:
-                        placeholders = ",".join(["?"] * len(student["assigned_subjects"]))
-                        c.execute(f"SELECT id FROM folders WHERE subject_code IN ({placeholders})", student["assigned_subjects"])
-                        assigned_folder_ids = [row[0] for row in c.fetchall()]
-                        for folder_id in assigned_folder_ids:
-                            c.execute("""
-                                INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
-                                VALUES (?, ?, ?)
-                            """, (folder_id, student_id, now))
-                        if assigned_folder_ids:
-                            print(f"   ✅ Auto-assigned to {len(assigned_folder_ids)} assignments in their subjects")
                 
                 else:
                     print(f"⚠️  Student already exists: {student['username']}")
@@ -450,7 +423,61 @@ def hash_password(pw: str) -> str:
 def now_iso():
     return datetime.datetime.utcnow().isoformat() + "Z"
 
+def current_semester_year():
+    """Return ('SPR'|'AUT', year) based on current UTC month."""
+    m = datetime.datetime.utcnow().month
+    semester = "SPR" if 1 <= m <= 6 else "AUT"
+    year = datetime.datetime.utcnow().year
+    return semester, year
 
+def auto_assign_student_to_subject_folders(conn: sqlite3.Connection, student_id: int, subject_id: int) -> int:
+    """Assign a student to all existing folders for the given subject."""
+    c = conn.cursor()
+    # Get subject code
+    c.execute("SELECT code FROM subjects WHERE id = ?", (subject_id,))
+    row = c.fetchone()
+    if not row:
+        return 0
+    subject_code = row[0]
+    # Find folders for subject
+    c.execute("SELECT id FROM folders WHERE subject_code = ?", (subject_code,))
+    folder_ids = [r[0] for r in c.fetchall()]
+    now = now_iso()
+    assigned = 0
+    for fid in folder_ids:
+        c.execute("""
+            INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
+            VALUES (?, ?, ?)
+        """, (fid, student_id, now))
+        assigned += 1
+    return assigned
+
+def auto_enroll_student_randomly(conn: sqlite3.Connection, student_id: int, max_subjects: int = 2) -> int:
+    """Randomly enroll a student into up to max_subjects existing subjects and assign to current folders."""
+    c = conn.cursor()
+    # Load all subjects
+    c.execute("SELECT id FROM subjects")
+    subjects = [r[0] for r in c.fetchall()]
+    if not subjects:
+        return 0
+    # Pick 1..max_subjects randomly (at least 1)
+    k = min(max_subjects, len(subjects))
+    k = max(1, k)
+    pick = random.sample(subjects, k)
+    semester, year = current_semester_year()
+    count = 0
+    for sid in pick:
+        # Enroll if not yet enrolled for this sem/year
+        c.execute("""
+            INSERT OR IGNORE INTO subject_enrollments (student_id, subject_id, enrolled_at, semester, year, status)
+            VALUES (?, ?, ?, ?, ?, 'active')
+        """, (student_id, sid, now_iso(), semester, year))
+        # Also assign this student to all current folders for the subject
+        auto_assign_student_to_subject_folders(conn, student_id, sid)
+        count += 1
+    return count
+
+# --- FastAPI app and routes ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -520,8 +547,9 @@ class FolderCreate(BaseModel):
     due_date: Optional[str] = None
     max_points: int = 100
     status: str = "draft"
-    subject_code: str  # Added required field
+    subject_code: str
     student_ids: List[int] = []
+    files: Optional[List["FileCreate"]] = []  # NEW: lecturer-only files (e.g., marker script)
 
 class FolderUpdate(BaseModel):
     name: Optional[str] = None
@@ -530,6 +558,8 @@ class FolderUpdate(BaseModel):
     max_points: Optional[int] = None
     status: Optional[str] = None
     student_ids: Optional[List[int]] = None
+    files: Optional[List["FileCreate"]] = None  # NEW: append-only lecturer files
+    remove_file_ids: Optional[List[int]] = None  # NEW: lecturer files to remove
 
 class GradeSubmission(BaseModel):
     score: int
@@ -551,6 +581,10 @@ class FileCreate(BaseModel):
     content: str  # base64 encoded content
     folder_id: Optional[int] = None
     submission_id: Optional[int] = None
+
+# Resolve forward refs after FileCreate definition
+FolderCreate.model_rebuild()
+FolderUpdate.model_rebuild()
 
 # New: student submission payload
 class StudentSubmissionCreate(BaseModel):
@@ -656,26 +690,16 @@ def register(body: RegisterIn):
             now_iso(),
         ))
         user_id = c.lastrowid
+
+        # Randomly enroll new students on registration and auto-assign their current folders
+        if body.role == "student":
+            try:
+                auto_enroll_student_randomly(conn, user_id)
+            except Exception as e:
+                logger.warning(f"Auto-enroll failed for {body.username}: {e}")
+
         conn.commit()
         
-        # Assign student to subjects/assignments based on mapping only
-        if body.role == "student":
-            subject_codes = get_assigned_subject_codes_for_username(body.username.strip())
-            if subject_codes:
-                placeholders = ",".join(["?"] * len(subject_codes))
-                c.execute(f"SELECT id FROM folders WHERE subject_code IN ({placeholders})", subject_codes)
-                folder_ids = [row[0] for row in c.fetchall()]
-                assign_time = now_iso()
-                for folder_id in folder_ids:
-                    c.execute("""
-                        INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
-                        VALUES (?, ?, ?)
-                    """, (folder_id, user_id, assign_time))
-                conn.commit()
-                print(f"✅ Auto-assigned student {body.username} to {len(folder_ids)} assignments in subjects {subject_codes}")
-            else:
-                print(f"ℹ️ No default subject mapping for {body.username}; no assignments created")
-            
     except sqlite3.IntegrityError as e:
         conn.close()
         msg = "Username already exists" if "username" in str(e).lower() else "Email already exists"
@@ -874,18 +898,25 @@ def list_folders(current_user: dict = Depends(get_current_user)):
     try:
         c.execute("""
             SELECT id, name, description, due_date, max_points, status,
-                   created_at, updated_at, lecturer_id, subject_code
+                   created_at, updated_at, lecturer_id, subject_code, lecturer_file_ids
             FROM folders
             WHERE lecturer_id = ?
             ORDER BY COALESCE(updated_at, created_at) DESC
         """, (current_user["id"],))
-        return _dict_rows(c)
+        rows = _dict_rows(c)
+        # Add derived count for convenience
+        for r in rows:
+            try:
+                r["lecturer_files_count"] = len(json.loads(r.get("lecturer_file_ids") or "[]"))
+            except Exception:
+                r["lecturer_files_count"] = 0
+        return rows
     finally:
         conn.close()
 
 @app.get("/api/v1/student/folders")
 def get_student_folders(current_user: dict = Depends(get_current_user)):
-    """List folders (assignments) assigned to the current student and visible."""
+    """List folders (assignments) visible to the current student by subject enrollments (no lecturer files exposed)."""
     if current_user["role"] != "student":
         raise HTTPException(status_code=403, detail="Only students can access their assignments")
     conn = sqlite3.connect(DB_PATH)
@@ -893,23 +924,29 @@ def get_student_folders(current_user: dict = Depends(get_current_user)):
     c = conn.cursor()
     try:
         c.execute("""
-            SELECT f.*
+            SELECT f.id, f.name, f.description, f.due_date, f.max_points, f.status,
+                   f.created_at, f.updated_at, f.lecturer_id, f.subject_code
             FROM folders f
-            JOIN folder_assignments fa ON fa.folder_id = f.id
-            WHERE fa.student_id = ?
-              AND LOWER(f.status) IN ('published','active')
+            JOIN subjects s ON s.code = f.subject_code
+            JOIN subject_enrollments se 
+                ON se.subject_id = s.id 
+               AND se.student_id = ? 
+               AND se.status = 'active'
+            WHERE LOWER(f.status) IN ('published','active')
             ORDER BY COALESCE(f.due_date, f.created_at) ASC
         """, (current_user["id"],))
+        # lecturer_file_ids deliberately excluded from SELECT
         return _dict_rows(c)
     finally:
         conn.close()
 
 @app.post("/api/v1/folders")
 async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_current_user)):
-    """Create a new assignment folder"""
+    """Create a new assignment folder (optionally with lecturer marker/reference files)."""
     if current_user["role"] != "lecturer":
         raise HTTPException(status_code=403, detail="Only lecturers can create folders")
 
+    _ensure_lecturer_files_column()  # NEW: make sure column exists before insert
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -917,8 +954,8 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
         now = now_iso()
         c.execute("""
             INSERT INTO folders (name, description, due_date, max_points, status,
-                                 created_at, updated_at, lecturer_id, subject_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 created_at, updated_at, lecturer_id, subject_code, lecturer_file_ids)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             folder.name.strip(),
             (folder.description or None),
@@ -929,20 +966,47 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
             now,
             current_user["id"],
             folder.subject_code.strip(),
+            None  # placeholder; update after file insert
         ))
         folder_id = c.lastrowid
 
-        # Assign students (if any)
+        lecturer_file_ids_json = None
+        # Store lecturer files if provided
+        if folder.files:
+            file_ids = _insert_lecturer_files(c, current_user["id"], folder.files)
+            lecturer_file_ids_json = json.dumps(file_ids)
+            c.execute("UPDATE folders SET lecturer_file_ids = ? WHERE id = ?", (lecturer_file_ids_json, folder_id))
+
+        # Auto-assign actively enrolled students (unchanged)
         assigned = 0
-        if folder.student_ids:
-            for student_id in folder.student_ids:
+        try:
+            c.execute("SELECT id FROM subjects WHERE code = ?", (folder.subject_code.strip(),))
+            subj = c.fetchone()
+            if subj:
+                subject_id = subj["id"] if isinstance(subj, sqlite3.Row) else subj[0]
                 c.execute("""
-                    INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
-                    VALUES (?, ?, ?)
-                """, (folder_id, student_id, now))
-                assigned += 1
+                    SELECT student_id 
+                    FROM subject_enrollments 
+                    WHERE subject_id = ? AND status = 'active'
+                """, (subject_id,))
+                student_ids = [r[0] for r in c.fetchall()]
+                for sid in student_ids:
+                    c.execute("""
+                        INSERT OR IGNORE INTO folder_assignments (folder_id, student_id, assigned_at)
+                        VALUES (?, ?, ?)
+                    """, (folder_id, sid, now))
+                assigned = len(student_ids)
+        except Exception as e:
+            logger.warning(f"Auto-assign students failed for folder {folder_id}: {e}")
 
         conn.commit()
+
+        lecturer_files_count = 0
+        if lecturer_file_ids_json:
+            try:
+                lecturer_files_count = len(json.loads(lecturer_file_ids_json))
+            except Exception:
+                pass
 
         return {
             "id": folder_id,
@@ -956,6 +1020,7 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
             "lecturer_id": current_user["id"],
             "subject_code": folder.subject_code,
             "assigned_students_count": assigned,
+            "lecturer_files_count": lecturer_files_count
         }
 
     except sqlite3.Error as e:
@@ -964,15 +1029,75 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
     finally:
         conn.close()
 
-@app.put("/api/v1/folders/{folder_id}")
-def update_folder(folder_id: int, payload: FolderUpdate, current_user: dict = Depends(get_current_user)):
-    """Update an assignment (folder) and optionally reassign students."""
+@app.get("/api/v1/folders/{folder_id}/lecturer-files")
+def get_lecturer_files(folder_id: int, current_user: dict = Depends(get_current_user)):
+    """Return metadata for lecturer files attached to a folder (owner only)."""
     _ensure_lecturer(current_user)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     try:
         _ensure_folder_owner(c, folder_id, current_user["id"])
+        c.execute("SELECT lecturer_file_ids FROM folders WHERE id = ?", (folder_id,))
+        row = c.fetchone()
+        if not row:
+            raise HTTPException(404, "Folder not found")
+        file_ids = []
+        try:
+            file_ids = json.loads(row[0] or "[]")
+        except Exception:
+            file_ids = []
+        if not file_ids:
+            return []
+        placeholders = ",".join(["?"] * len(file_ids))
+        c.execute(f"""
+            SELECT id, name, type, size, uploaded_at, uploaded_by
+            FROM files
+            WHERE id IN ({placeholders})
+            ORDER BY id
+        """, file_ids)
+        return _dict_rows(c)
+    finally:
+        conn.close()
+
+@app.put("/api/v1/folders/{folder_id}")
+def update_folder(folder_id: int, payload: FolderUpdate, current_user: dict = Depends(get_current_user)):
+    """Update an assignment (folder) and optionally append lecturer files or reassign students."""
+    _ensure_lecturer(current_user)
+    _ensure_lecturer_files_column()  # NEW: ensure column before update
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        _ensure_folder_owner(c, folder_id, current_user["id"])
+
+        # Fetch current lecturer files list
+        c.execute("SELECT lecturer_file_ids FROM folders WHERE id = ?", (folder_id,))
+        row = c.fetchone()
+        existing_file_ids = []
+        if row and row[0]:
+            try:
+                existing_file_ids = json.loads(row[0])
+            except Exception:
+                existing_file_ids = []
+
+        # NEW: remove specified lecturer files
+        if payload.remove_file_ids:
+            remove_set = set(int(x) for x in payload.remove_file_ids)
+            to_delete = [fid for fid in existing_file_ids if fid in remove_set]
+            if to_delete:
+                existing_file_ids = [fid for fid in existing_file_ids if fid not in remove_set]
+                placeholders = ",".join(["?"] * len(to_delete))
+                c.execute(f"DELETE FROM files WHERE id IN ({placeholders})", to_delete)
+
+        # Append new lecturer files if provided
+        if payload.files:
+            new_ids = _insert_lecturer_files(c, current_user["id"], payload.files)
+            existing_file_ids.extend(new_ids)
+
+        # Persist updated lecturer_file_ids if changed
+        c.execute("UPDATE folders SET lecturer_file_ids = ? WHERE id = ?",
+                  (json.dumps(existing_file_ids), folder_id))
 
         fields = []
         values = []
@@ -986,7 +1111,6 @@ def update_folder(folder_id: int, payload: FolderUpdate, current_user: dict = De
             fields.append("max_points = ?"); values.append(int(payload.max_points))
         if payload.status is not None:
             fields.append("status = ?"); values.append(payload.status.strip())
-        # subject_code is not editable via update payload per current UI
         fields.append("updated_at = ?"); values.append(now_iso())
 
         if fields:
@@ -994,15 +1118,12 @@ def update_folder(folder_id: int, payload: FolderUpdate, current_user: dict = De
             values.append(folder_id)
             c.execute(q, values)
 
-        # Reassign students if provided (replace set)
         if payload.student_ids is not None:
             new_ids = set(int(x) for x in payload.student_ids)
             c.execute("SELECT student_id FROM folder_assignments WHERE folder_id = ?", (folder_id,))
             current_ids = set(r[0] for r in c.fetchall())
-
             to_add = new_ids - current_ids
             to_del = current_ids - new_ids
-
             if to_del:
                 placeholders = ",".join(["?"] * len(to_del))
                 c.execute(f"DELETE FROM folder_assignments WHERE folder_id = ? AND student_id IN ({placeholders})",
@@ -1017,11 +1138,16 @@ def update_folder(folder_id: int, payload: FolderUpdate, current_user: dict = De
 
         c.execute("""
             SELECT id, name, description, due_date, max_points, status,
-                   created_at, updated_at, lecturer_id, subject_code
+                   created_at, updated_at, lecturer_id, subject_code, lecturer_file_ids
             FROM folders WHERE id = ?
         """, (folder_id,))
-        row = c.fetchone()
-        return dict(row)
+        out = dict(c.fetchone())
+        # Add derived field
+        try:
+            out["lecturer_files_count"] = len(json.loads(out.get("lecturer_file_ids") or "[]"))
+        except Exception:
+            out["lecturer_files_count"] = 0
+        return out
     except HTTPException:
         conn.rollback()
         raise
@@ -1136,14 +1262,34 @@ def get_student_subjects(current_user: dict = Depends(get_current_user)):
         c.execute("""
             SELECT DISTINCT s.id, s.code, s.name, s.lecturer_id, s.created_at
             FROM subjects s
+            JOIN subject_enrollments se 
+                ON se.subject_id = s.id 
+               AND se.student_id = ?
+               AND se.status = 'active'
             JOIN folders f ON f.subject_code = s.code
-            JOIN folder_assignments fa ON fa.folder_id = f.id
-            WHERE fa.student_id = ?
-              AND LOWER(f.status) IN ('published','active')
+            WHERE LOWER(f.status) IN ('published','active')
             ORDER BY s.code
         """, (current_user["id"],))
         rows = c.fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+# List students (lecturers only) for enrollment UI
+@app.get("/api/v1/students")
+def list_students(current_user: dict = Depends(get_current_user)):
+    _ensure_lecturer(current_user)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT id, username, email, first_name, last_name
+            FROM users
+            WHERE role = 'student' AND is_active = 1
+            ORDER BY first_name, last_name
+        """)
+        return _dict_rows(c)
     finally:
         conn.close()
 
@@ -1731,7 +1877,7 @@ async def enroll_student_admin(subject_id: int, student_id: int, semester: str, 
 # API endpoints for subjects
 @app.get("/api/v1/subjects")
 async def get_all_subjects(current_user: dict = Depends(get_current_user)):
-    """Get subjects. Lecturers: subjects they teach. Students: subjects from assigned active folders."""
+    """Get subjects. Lecturers: subjects they teach. Students: subjects from active enrollments."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -1745,14 +1891,13 @@ async def get_all_subjects(current_user: dict = Depends(get_current_user)):
             """, (current_user["id"],))
             return _dict_rows(c)
         else:
-            # Student fallback (keep behavior similar to /api/v1/student/subjects)
             c.execute("""
                 SELECT DISTINCT s.id, s.code, s.name, s.lecturer_id, s.created_at
                 FROM subjects s
-                JOIN folders f ON f.subject_code = s.code
-                JOIN folder_assignments fa ON fa.folder_id = f.id
-                WHERE fa.student_id = ?
-                  AND LOWER(f.status) IN ('published','active')
+                JOIN subject_enrollments se 
+                    ON se.subject_id = s.id 
+                   AND se.student_id = ?
+                   AND se.status = 'active'
                 ORDER BY s.code
             """, (current_user["id"],))
             return _dict_rows(c)
@@ -1806,19 +1951,23 @@ def create_or_update_submission(payload: StudentSubmissionCreate, current_user: 
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     try:
-        # Verify folder is assigned to this student and active
+        # Verify folder belongs to a subject the student is actively enrolled in and is open
         c.execute("""
           SELECT f.id, f.status
           FROM folders f
-          JOIN folder_assignments fa ON fa.folder_id = f.id
-          WHERE f.id = ? AND fa.student_id = ?
-        """, (payload.folder_id, current_user["id"]))
+          JOIN subjects s ON s.code = f.subject_code
+          JOIN subject_enrollments se 
+            ON se.subject_id = s.id 
+           AND se.student_id = ?
+           AND se.status = 'active'
+          WHERE f.id = ?
+        """, (current_user["id"], payload.folder_id))
         frow = c.fetchone()
         if not frow:
-          raise HTTPException(403, "You are not assigned to this assignment")
+            raise HTTPException(403, "You are not enrolled in the subject for this assignment")
         status = (frow["status"] or "").lower()
         if status not in ("published", "active"):
-          raise HTTPException(400, "Assignment is not open for submissions")
+            raise HTTPException(400, "Assignment is not open for submissions")
 
         now = now_iso()
         # Insert files
@@ -1826,6 +1975,7 @@ def create_or_update_submission(payload: StudentSubmissionCreate, current_user: 
         for fl in payload.files:
             try:
                 content_b64 = fl.content
+                # Accept data URLs
                 if "," in content_b64:
                     content_b64 = content_b64.split(",", 1)[1]
                 blob = base64.b64decode(content_b64)
@@ -1916,3 +2066,63 @@ def get_file(file_id: int, current_user: dict = Depends(get_current_user)):
         raise HTTPException(500, f"Database error: {str(e)}")
     finally:
         conn.close()
+
+def _ensure_lecturer_files_column():
+    """Ensure folders table has lecturer_file_ids column (runtime safety for older DBs)."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(folders);")
+        cols = {r[1] for r in c.fetchall()}
+        if "lecturer_file_ids" not in cols:
+            try:
+                c.execute("ALTER TABLE folders ADD COLUMN lecturer_file_ids TEXT")
+                conn.commit()
+                logger.info("Added missing lecturer_file_ids column to folders table at runtime.")
+            except sqlite3.OperationalError as e:
+                logger.warning(f"Could not add lecturer_file_ids column (maybe race condition): {e}")
+    except Exception as e:
+        logger.error(f"_ensure_lecturer_files_column failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except:
+            pass
+
+# --- NEW: lecturer file insertion helper (used by create/update folder) ---
+def _insert_lecturer_files(c: sqlite3.Cursor, uploader_id: int, files: List[FileCreate]) -> List[int]:
+    """
+    Persist lecturer-only files (e.g., marker scripts) into files table.
+    Returns list of inserted file IDs.
+    """
+    inserted: List[int] = []
+    if not files:
+        return inserted
+    now = now_iso()
+    for f in files:
+        try:
+            content_b64 = f.content
+            # Accept data URLs
+            if "," in content_b64:
+                content_b64 = content_b64.split(",", 1)[1]
+            blob = base64.b64decode(content_b64)
+        except Exception as e:
+            logger.warning(f"Skipping file '{getattr(f,'name', '?')}' (decode error): {e}")
+            continue
+        size = f.size or len(blob)
+        if size != len(blob):
+            # Trust actual decoded length
+            size = len(blob)
+        c.execute("""
+            INSERT INTO files (name, type, size, content, uploaded_at, uploaded_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            f.name,
+            f.type or "application/octet-stream",
+            size,
+            sqlite3.Binary(blob),
+            now,
+            uploader_id
+        ))
+        inserted.append(c.lastrowid)
+    return inserted
