@@ -1,25 +1,39 @@
 # Backend/server/app/main.py
-from fastapi import FastAPI, HTTPException, Request, Depends
+
+from fastapi import FastAPI, HTTPException, Request, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
-import hashlib, sqlite3, uuid, datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pathlib import Path
-import logging
+from contextlib import asynccontextmanager
 
-# Keep a single uuid import
-import uuid
+
+from pydantic import BaseModel, EmailStr
 
 import os
-from typing import List, Optional, Dict
 import json
-from contextlib import asynccontextmanager
-import threading, time, traceback 
 import base64
+import hashlib
+import sqlite3
+import datetime
+import logging
+import threading
+import time
+import traceback
+from pathlib import Path
+from typing import List, Optional, Dict
+import shutil
+import zipfile
+import uuid
 
-# SSH user management
+# Local modules for SVN → sandbox flow (make sure these files exist under app/)
+from . import storage, worker, docker_runner
+
+
+
+
+# SSH user management (adjust path if this module lives elsewhere)
 from ssh_user_manager import create_ssh_user_for_registration
+
 
 # Database path
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -443,6 +457,28 @@ def init_db():
         if 'conn' in locals():
             conn.close()
 
+def init_svn_jobs_table():
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS svn_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            folder_id INTEGER NOT NULL,
+            student_username TEXT NOT NULL,
+            svn_url TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued', -- queued|running|completed|failed
+            result_path TEXT,
+            log_path TEXT,
+            exit_code INTEGER,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
 
 def hash_password(pw: str) -> str:
     return hashlib.sha256(pw.encode("utf-8")).hexdigest()
@@ -467,11 +503,19 @@ async def lifespan(app: FastAPI):
     # Shutdown (nothing needed for now)
     print("🛑 LIFESPAN: Shutting down application...")
 
+def ensure_ssh_container_running():
+    return True
+
+
 app = FastAPI(title="Automark API", version="0.2.0", lifespan=lifespan)
+
+
 
 # Force database initialization if lifespan isn't working
 import atexit
 init_db()
+init_svn_jobs_table()
+
 atexit.register(lambda: None)  # Cleanup on exit
 
 # Mount static folder
@@ -1530,6 +1574,192 @@ This assignment focuses on [assignment objectives]. Please read these instructio
 """
     
     return template_files
+
+@app.post("/api/v1/folders/{folder_id}/marker")
+def upload_marker_for_folder(
+    folder_id: int,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    # Only lecturers can upload markers for folders they own
+    if current_user["role"] != "lecturer":
+        raise HTTPException(403, "Only lecturers can upload marker")
+
+    # ensure lecturer owns the folder
+    conn = sqlite3.connect(DB_PATH); c = conn.cursor()
+    try:
+        c.execute("SELECT lecturer_id FROM folders WHERE id = ?", (folder_id,))
+        row = c.fetchone()
+        if not row:
+            raise HTTPException(404, "Folder not found")
+        if row[0] != current_user["id"]:
+            raise HTTPException(403, "You do not own this folder")
+    finally:
+        conn.close()
+
+    marker_dir = storage.ASSIGN_BASE / str(folder_id) / "marker"
+    marker_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save the uploaded file
+    dest = marker_dir / file.filename
+    with dest.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # If a zip is uploaded, extract it
+    if dest.suffix.lower() == ".zip":
+        with zipfile.ZipFile(dest) as z:
+            z.extractall(marker_dir)
+
+        # Try to find run.sh (supports a top-level folder inside the zip)
+        run_sh_flat = marker_dir / "run.sh"
+        found_path = None
+
+        if run_sh_flat.exists():
+            found_path = run_sh_flat
+        else:
+            # look one or two levels deep for run.sh
+            for root, dirs, files in os.walk(marker_dir):
+                # skip the marker_dir itself (we already checked)
+                if Path(root) == marker_dir:
+                    continue
+                if "run.sh" in files:
+                    candidate = Path(root) / "run.sh"
+                    found_path = candidate
+                    break
+
+        # If we found a nested run.sh, move it up to marker/
+        if found_path and found_path != run_sh_flat:
+            shutil.move(str(found_path), str(run_sh_flat))
+            # optionally clean up the now-empty top-level subdir created by the zip
+            try:
+                # remove empty dirs under marker_dir (best-effort)
+                for p in sorted(marker_dir.glob("*/"), key=lambda p: len(str(p)), reverse=True):
+                    try:
+                        p.rmdir()
+                    except OSError:
+                        pass
+            except Exception:
+                pass
+
+        # Ensure run.sh is executable
+        if run_sh_flat.exists():
+            os.chmod(run_sh_flat, 0o755)
+
+        # Remove the uploaded zip to keep the folder clean (optional)
+        try:
+            dest.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    else:
+        # Non-zip uploads: if it's named run.sh, ensure executable
+        if dest.name == "run.sh":
+            os.chmod(dest, 0o755)
+
+    return {"ok": True, "folder_id": folder_id, "marker_path": str(marker_dir)}
+
+
+
+class SVNJobIn(BaseModel):
+    folder_id: int
+    student_username: str
+    svn_url: str
+    revision: int
+
+def _run_svn_job(job_id: int):
+    """Export code from SVN and run marker in a fresh Docker container."""
+    # update -> running
+    conn = sqlite3.connect(DB_PATH); c = conn.cursor()
+    try:
+        c.execute("UPDATE svn_jobs SET status='running', started_at=? WHERE id=?",
+                  (now_iso(), job_id))
+        conn.commit()
+        # fetch job row
+        c.execute("SELECT folder_id, svn_url, revision FROM svn_jobs WHERE id=?", (job_id,))
+        row = c.fetchone()
+        if not row:
+            return
+        folder_id, svn_url, revision = row
+    finally:
+        conn.close()
+
+    # Paths
+    code_dir    = storage.SUBMISSIONS_BASE / str(job_id) / "src"
+    results_dir = storage.RESULTS_BASE / str(job_id)
+    marker_dir  = storage.ASSIGN_BASE / str(folder_id) / "marker"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1) Export student code
+    exit_code = 1
+    logs_text = ""
+    try:
+        worker.svn_export(svn_url, revision, str(code_dir))
+        exit_code, logs_text = docker_runner.run_job(job_id, code_dir, marker_dir, results_dir)
+    except Exception as e:
+        logs_text = f"ERROR: {e}\n" + traceback.format_exc()
+
+    # Write logs
+    log_path = results_dir / "runner.log"
+    try:
+        log_path.write_text(logs_text, encoding="utf-8")
+    except Exception:
+        pass
+
+    # update -> completed/failed
+    conn = sqlite3.connect(DB_PATH); c = conn.cursor()
+    try:
+        c.execute("""UPDATE svn_jobs
+                     SET status=?, exit_code=?, result_path=?, log_path=?, finished_at=?
+                     WHERE id=?""",
+                  ("completed" if exit_code == 0 else "failed",
+                   int(exit_code),
+                   str(results_dir),
+                   str(log_path),
+                   now_iso(),
+                   job_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+@app.post("/api/v1/submissions/receive_svn")
+def receive_submission_svn(body: SVNJobIn):
+    """Called by SVN post-commit (or poller) to trigger a sandbox run."""
+    now = now_iso()
+    conn = sqlite3.connect(DB_PATH); c = conn.cursor()
+    try:
+        # basic validation: folder exists
+        c.execute("SELECT id FROM folders WHERE id = ?", (body.folder_id,))
+        if not c.fetchone():
+            raise HTTPException(404, "Folder not found")
+
+        c.execute("""INSERT INTO svn_jobs(folder_id, student_username, svn_url, revision, status, created_at)
+                     VALUES(?,?,?,?, 'queued', ?)""",
+                  (body.folder_id, body.student_username, body.svn_url, int(body.revision), now))
+        job_id = c.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+
+    # kick off a background thread for this job
+    threading.Thread(target=_run_svn_job, args=(job_id,), daemon=True).start()
+    return {"job_id": job_id, "status": "queued"}
+
+@app.get("/api/v1/svn_jobs/{job_id}")
+def get_svn_job(job_id: int):
+    conn = sqlite3.connect(DB_PATH); conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    try:
+        c.execute("""SELECT id, folder_id, student_username, svn_url, revision, status,
+                            exit_code, result_path, log_path, created_at, started_at, finished_at
+                     FROM svn_jobs WHERE id=?""", (job_id,))
+        row = c.fetchone()
+        if not row:
+            raise HTTPException(404, "Job not found")
+        return dict(row)
+    finally:
+        conn.close()
+
 
 # API endpoints for subject enrollments
 @app.post("/api/v1/enrollments")

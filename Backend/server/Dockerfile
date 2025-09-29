@@ -3,37 +3,38 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies (curl for healthcheck; gcc only if needed by some wheels)
+# System deps: curl for healthcheck, subversion for svn export
+# (gcc is optional; keep if some wheels need it)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
     curl \
-    docker.io \
-    && rm -rf /var/lib/apt/lists/*
+    subversion \
+    gcc \
+ && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
+# Copy requirements first for caching
 COPY requirements.txt .
 
-# Install Python dependencies
+# Python deps
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# App code
 COPY . .
 
-# Create directories for data persistence
+# Persistent dirs
 RUN mkdir -p /app/data /app/uploads
 
-# Expose the port the app runs on
+# Expose API
 EXPOSE 8000
 
-# Environment variables
+# Env
 ENV PYTHONPATH=/app
 ENV DB_PATH=/app/data/automark.db
 ENV UPLOAD_DIR=/app/uploads
 
-# Health check
+# Healthcheck
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+  CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the application
+# Run (dev-friendly hot reload)
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
