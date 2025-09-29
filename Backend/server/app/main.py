@@ -220,8 +220,35 @@ def init_db():
                 "password": "carolpass123",
                 "first_name": "Carol",
                 "last_name": "Williams",
+            },
+            # --- NEW PRE-PROVISIONED STUDENTS (with planned subject enrollment) ---
+            {
+                "username": "student_david",
+                "email": "david.miller@student.automark.com",
+                "password": "davidpass123",
+                "first_name": "David",
+                "last_name": "Miller",
+                "subjects": ["COMP_0067", "COMP_0420"]
+            },
+            {
+                "username": "student_emma",
+                "email": "emma.jones@student.automark.com",
+                "password": "emmapass123",
+                "first_name": "Emma",
+                "last_name": "Jones",
+                "subjects": ["INFS_8586"]
+            },
+            {
+                "username": "student_frank",
+                "email": "frank.taylor@student.automark.com",
+                "password": "frankpass123",
+                "first_name": "Frank",
+                "last_name": "Taylor",
+                "subjects": ["COMP_5055", "INFS_8586"]
             }
         ]
+
+        pending_student_subjects = []  # NEW: collect (username, [subject_codes]) to enroll after subjects exist
 
         for student in students:
             try:
@@ -257,6 +284,9 @@ def init_db():
                 
                 else:
                     print(f"⚠️  Student already exists: {student['username']}")
+                # NEW: record desired subject enrollments (processed later after lecturer subjects are inserted)
+                if student.get("subjects"):
+                    pending_student_subjects.append((student["username"], student["subjects"]))
             except sqlite3.Error as e:
                 print(f"❌ Failed to create student {student['username']}: {e}")
                 continue
@@ -398,17 +428,50 @@ def init_db():
                 print(f"❌ Failed to create lecturer {lecturer['username']}: {e}")
                 continue
 
+        # NEW: enroll pre-provisioned students into specified subjects (after lecturers & subjects exist)
+        try:
+            semester, year = current_semester_year()
+            for username, subj_codes in pending_student_subjects:
+                c.execute("SELECT id FROM users WHERE username = ?", (username,))
+                row = c.fetchone()
+                if not row:
+                    continue
+                student_id = row[0]
+                for code in subj_codes:
+                    c.execute("SELECT id FROM subjects WHERE code = ?", (code,))
+                    srow = c.fetchone()
+                    if not srow:
+                        print(f"   ⚠️ Cannot enroll {username}: subject {code} not found yet")
+                        continue
+                    subject_id = srow[0]
+                    c.execute("""
+                        INSERT OR IGNORE INTO subject_enrollments
+                          (student_id, subject_id, enrolled_at, semester, year, status)
+                        VALUES (?, ?, ?, ?, ?, 'active')
+                    """, (student_id, subject_id, now_iso(), semester, year))
+                    # Auto-assign existing folders for that subject
+                    auto_assign_student_to_subject_folders(conn, student_id, subject_id)
+            print("✅ Processed predefined student subject enrollments")
+        except Exception as e:
+            print(f"⚠️ Enrollment staging error: {e}")
+
         print("💾 INIT_DB: Committing changes...")
         conn.commit()
 
-        # Verify tables exist
+        # --- ADDED: (moved up) verify tables & close; removed duplicated block below ---
         c.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [t[0] for t in c.fetchall()]
         print(f"✅ INIT_DB: Tables present: {tables}")
-
         conn.close()
         print("🔐 INIT_DB: Database connection closed")
+        return  # ensure we exit before the old duplicate region
 
+        # --- REMOVED DUPLICATE BLOCK START ---
+        # (Previously: second creation of subject_enrollments, assignment_templates,
+        #  hardcoded lecturers, second enrollment staging, second commit, verify tables)
+        # --- REMOVED DUPLICATE BLOCK END ---
+
+        # ...existing code that followed duplicate (now unreachable after return)...
     except Exception as e:
         print(f"❌ INIT_DB ERROR: {e}")
         import traceback
@@ -691,7 +754,6 @@ def register(body: RegisterIn):
         ))
         user_id = c.lastrowid
 
-        # Randomly enroll new students on registration and auto-assign their current folders
         if body.role == "student":
             try:
                 auto_enroll_student_randomly(conn, user_id)
@@ -699,16 +761,73 @@ def register(body: RegisterIn):
                 logger.warning(f"Auto-enroll failed for {body.username}: {e}")
 
         conn.commit()
-        
+
     except sqlite3.IntegrityError as e:
+        # --- NEW: student re-registration by SAME EMAIL updates existing record ---
+        if body.role == "student" and "email" in str(e).lower():
+            try:
+                c.execute("SELECT id, username, role FROM users WHERE email = ?", (body.email.strip().lower(),))
+                existing = c.fetchone()
+                if existing and existing[2] == "student":
+                    existing_id, existing_username, _ = existing
+
+                    # If username change requested, ensure it's free
+                    new_username = existing_username
+                    requested_username = body.username.strip()
+                    if requested_username != existing_username:
+                        c.execute("SELECT id FROM users WHERE username = ?", (requested_username,))
+                        taken = c.fetchone()
+                        if not taken:
+                            new_username = requested_username  # safe to adopt
+                        else:
+                            logger.info(f"Username '{requested_username}' taken; retaining '{existing_username}'")
+
+                    c.execute("""
+                        UPDATE users
+                        SET username = ?, password_hash = ?, first_name = ?, last_name = ?
+                        WHERE id = ?
+                    """, (
+                        new_username,
+                        hash_password(body.password),
+                        body.first_name.strip(),
+                        body.last_name.strip(),
+                        existing_id
+                    ))
+                    conn.commit()
+                    user_id = existing_id  # reuse existing id
+
+                    c.execute("SELECT id, username, email, role, first_name, last_name FROM users WHERE id = ?", (user_id,))
+                    row = c.fetchone()
+                    conn.close()
+
+                    # Attempt SSH user creation for (possibly) new username
+                    try:
+                        ssh_result = create_ssh_user_for_registration(new_username, body.password)
+                        if ssh_result.get("success"):
+                            logger.info(f"SSH user ensured/updated for {new_username}")
+                        else:
+                            logger.warning(f"SSH user creation skipped/failed for {new_username}: {ssh_result.get('error')}")
+                    except Exception as se:
+                        logger.warning(f"SSH provisioning error (update path) for {new_username}: {se}")
+
+                    return RegisterOut(
+                        id=row[0], username=row[1], email=row[2], role=row[3],
+                        first_name=row[4], last_name=row[5]
+                    )
+            except Exception as up_e:
+                conn.rollback()
+                conn.close()
+                logger.error(f"Student update-on-reregister failed: {up_e}")
+                raise HTTPException(500, "Could not update existing student record")
+        # --- fall back to original behavior ---
         conn.close()
         msg = "Username already exists" if "username" in str(e).lower() else "Email already exists"
         raise HTTPException(409, msg)
-    
+
     c.execute("SELECT id, username, email, role, first_name, last_name FROM users WHERE id = ?", (user_id,))
     row = c.fetchone()
     conn.close()
-    
+
     # Create SSH user automatically
     try:
         ssh_result = create_ssh_user_for_registration(body.username.strip(), body.password)
@@ -718,7 +837,7 @@ def register(body: RegisterIn):
             logger.warning(f"SSH user creation failed for {body.username}: {ssh_result.get('error', 'Unknown error')}")
     except Exception as e:
         logger.error(f"Error creating SSH user for {body.username}: {e}")
-    
+
     return RegisterOut(
         id=row[0], username=row[1], email=row[2], role=row[3],
         first_name=row[4], last_name=row[5]
@@ -1698,6 +1817,7 @@ async def enroll_student(enrollment: EnrollmentCreate, current_user: dict = Depe
         
         # Check if already enrolled
         c.execute("""
+
             SELECT id FROM subject_enrollments 
             WHERE student_id = ? AND subject_id = ? AND semester = ? AND year = ?
         """, (current_user["id"], subject_id, enrollment.semester, enrollment.year))
@@ -1797,7 +1917,7 @@ async def get_subject_students(subject_id: int, current_user: dict = Depends(get
         # Verify lecturer teaches this subject
         c.execute("SELECT lecturer_id FROM subjects WHERE id = ?", (subject_id,))
         subject_result = c.fetchone()
-        if not subject_result or subject_result["lecturer_id"] != current_user["id"]:
+        if not subject_result or subject_result[0] != current_user["id"]:
             raise HTTPException(status_code=403, detail="You don't teach this subject")
         
         # Get enrolled students
