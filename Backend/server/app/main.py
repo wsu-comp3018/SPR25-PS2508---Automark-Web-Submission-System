@@ -212,29 +212,7 @@ def init_db():
         print("👨‍🎓 INIT_DB: Creating hardcoded students...")
         now = now_iso()
         students = [
-            {
-                "username": "student_alice",
-                "email": "alice.smith@student.automark.com",
-                "password": "alicepass123",
-                "first_name": "Alice",
-                "last_name": "Smith",
-            },
-            {
-                "username": "student_bob",
-                "email": "bob.johnson@student.automark.com",
-                "password": "bobpass123",
-                "first_name": "Bob",
-                "last_name": "Johnson",
-            },
-            {
-                "username": "student_carol",
-                "email": "carol.williams@student.automark.com",
-                "password": "carolpass123",
-                "first_name": "Carol",
-                "last_name": "Williams",
-            },
-            # --- NEW PRE-PROVISIONED STUDENTS (with planned subject enrollment) ---
-            {
+                       {
                 "username": "student_david",
                 "email": "david.miller@student.automark.com",
                 "password": "davidpass123",
