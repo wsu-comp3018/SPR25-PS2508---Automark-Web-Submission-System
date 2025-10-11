@@ -1,0 +1,131 @@
+version: '3.8'
+
+services:
+  automark-api:
+    build:
+      context: ./Backend/server
+      dockerfile: Dockerfile
+    container_name: automark-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_PATH=/app/data/automark.db
+      - UPLOAD_DIR=/app/uploads
+      - PYTHONPATH=/app
+      - JOB_IMAGE=automark-job:latest
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    # Start FastAPI (comment this out if your Dockerfile already sets CMD)
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 
+    volumes:
+      # Persist DB and uploads
+      - automark-data:/app/data
+      - automark-uploads:/app/uploads
+      # Mount full backend server (contains /app/main.py under ./Backend/server/app/)
+      - ./Backend/server:/app
+      # Docker socket for SSH user mgmt / job runner
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Shared areas used by the app
+      - automark-submissions:/app/shared/submissions
+      - automark-assignments:/app/data/assignments
+      - automark-results:/app/data/results
+    networks:
+      - automark-network
+    depends_on:
+      - automark-ssh
+      # include svn if you have the service defined
+      - automark-svn
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+
+  # SSH Server for Assignment Submissions
+  automark-ssh:
+    build:
+      context: ./Backend/docker
+      dockerfile: Dockerfile
+    container_name: automark-ssh
+    ports:
+      - "2222:22"
+    volumes:
+      # Persist student submissions
+      - automark-submissions:/home
+    networks:
+      - automark-network
+    restart: unless-stopped
+    environment:
+      - TZ=Australia/Sydney
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -x sshd >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # SVN Server for Assignment Templates and Submission Collection
+  automark-svn:
+    build:
+      context: ./SVN
+      dockerfile: Dockerfile
+    container_name: automark-svn
+    ports:
+      - "3690:3690"  # SVN protocol port
+    volumes:
+      # SVN repositories
+      - automark-svn-repos:/var/svn
+      # Shared access to collect submissions
+      - automark-submissions:/var/submissions
+    networks:
+      - automark-network
+    restart: unless-stopped
+    environment:
+      - TZ=Australia/Sydney
+    healthcheck:
+      test: ["CMD", "svnserve", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Web Server for Frontend (optional - for production)
+  automark-web:
+    image: nginx:alpine
+    container_name: automark-web
+    ports:
+      - "3000:80"
+    volumes:
+      - ./Backend/server/static:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - automark-network
+    restart: unless-stopped
+    depends_on:
+      - automark-api
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  automark-data:
+    name: automark-data
+  automark-uploads:
+    name: automark-uploads
+  automark-submissions:
+    name: automark-submissions
+  automark-svn-repos:
+    name: automark-svn-repos
+  automark-assignments:
+    name: automark-assignments
+  automark-results:
+    name: automark-results
+
+
+networks:
+  automark-network:
+    driver: bridge

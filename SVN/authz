@@ -1,0 +1,27 @@
+[aliases]
+# User aliases can be defined here
+
+[groups]
+# Group definitions
+admins = admin
+students = 
+
+[/]
+# Root access rules
+@admins = rw
+* = r
+
+[/templates]
+# Templates - read-only for all, write for admins
+@admins = rw
+* = r
+
+[/student-repos]
+# Student submission repositories
+@admins = rw
+@students = rw
+
+# Individual student directory access - students can only access their own directories
+[/student-repos/*/\*]
+@admins = rw
+# Pattern: /student-repos/ASSIGNMENT/USERNAME - each student can only write to their own directory

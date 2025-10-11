@@ -1,0 +1,79 @@
+ body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #f4f6f8;
+      margin: 0;
+      padding: 20px;
+    }
+
+    h1 {
+      text-align: center;
+      color: #333;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 30px;
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.05);
+      overflow-x: auto;
+    }
+
+    th, td {
+      padding: 12px 15px;
+      text-align: left;
+      border-bottom: 1px solid #e0e0e0;
+    }
+
+    th {
+      background-color: #667eea;
+      color: white;
+    }
+
+    tr:hover {
+      background-color: #f1f3f5;
+    }
+
+    .status-active {
+      color: green;
+      font-weight: bold;
+    }
+
+    .status-inactive {
+      color: red;
+      font-weight: bold;
+    }
+
+    @media (max-width: 768px) {
+      th, td {
+        font-size: 14px;
+        padding: 8px;
+      }
+    }
+
+    .danger-button {
+      background: linear-gradient(135deg, #e74c3c, #c0392b);
+      border: none;
+      color: white;
+      padding: 14px 32px;
+      font-size: 16px;
+      font-weight: bold;
+      border-radius: 12px;
+      cursor: pointer;
+      margin-top: 30px;
+      box-shadow: 0 4px 12px rgba(231, 76, 60, 0.4);
+      transition: all 0.3s ease;
+      margin-right: 10px;
+    }
+
+    .danger-button:hover {
+      background: linear-gradient(135deg, #c0392b, #a93226);
+      transform: scale(1.03);
+      box-shadow: 0 6px 18px rgba(192, 57, 43, 0.5);
+    }
+
+    .danger-button:active {
+      transform: scale(0.97);
+      box-shadow: 0 2px 8px rgba(192, 57, 43, 0.3);
+    }
