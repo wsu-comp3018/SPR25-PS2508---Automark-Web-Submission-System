@@ -2474,3 +2474,135 @@ def _insert_lecturer_files(c: sqlite3.Cursor, uploader_id: int, files: List[File
         ))
         inserted.append(c.lastrowid)
     return inserted
+
+# Historic Directory Endpoints
+@app.get("/api/v1/historic/submissions")
+async def get_historic_submissions(
+    current_user: dict = Depends(get_current_user),
+    subject_code: Optional[str] = None,
+    student_id: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    status: Optional[str] = None
+):
+    """Get historic submissions with filtering options"""
+    if current_user["role"] != "lecturer":
+        raise HTTPException(status_code=403, detail="Only lecturers can access historic data")
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        # Base query with joins for comprehensive data
+        query = """
+            SELECT 
+                s.*,
+                f.name as assignment_name,
+                f.max_points,
+                f.subject_code,
+                u.first_name,
+                u.last_name,
+                u.username,
+                u.email,
+                subj.name as subject_name
+            FROM submissions s
+            JOIN folders f ON s.folder_id = f.id
+            JOIN users u ON s.student_id = u.id
+            LEFT JOIN subjects subj ON f.subject_code = subj.code
+            WHERE f.lecturer_id = ?
+        """
+        params = [current_user["id"]]
+        
+        # Add filters
+        if subject_code:
+            query += " AND f.subject_code = ?"
+            params.append(subject_code)
+        
+        if student_id:
+            query += " AND s.student_id = ?"
+            params.append(student_id)
+            
+        if date_from:
+            query += " AND s.submitted_at >= ?"
+            params.append(date_from)
+            
+        if date_to:
+            query += " AND s.submitted_at <= ?"
+            params.append(date_to)
+            
+        if status:
+            query += " AND s.status = ?"
+            params.append(status)
+        
+        query += " ORDER BY s.submitted_at DESC"
+        
+        c.execute(query, params)
+        submissions = c.fetchall()
+        
+        return [dict(sub) for sub in submissions]
+        
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+@app.get("/api/v1/historic/statistics")
+async def get_historic_statistics(current_user: dict = Depends(get_current_user)):
+    """Get statistics for historic directory"""
+    if current_user["role"] != "lecturer":
+        raise HTTPException(status_code=403, detail="Only lecturers can access statistics")
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        # Get total submissions count
+        c.execute("""
+            SELECT COUNT(*) as total_submissions
+            FROM submissions s
+            JOIN folders f ON s.folder_id = f.id
+            WHERE f.lecturer_id = ?
+        """, (current_user["id"],))
+        total_subs = c.fetchone()["total_submissions"]
+        
+        # Get graded submissions count
+        c.execute("""
+            SELECT COUNT(*) as graded_submissions
+            FROM submissions s
+            JOIN folders f ON s.folder_id = f.id
+            WHERE f.lecturer_id = ? AND s.status = 'graded'
+        """, (current_user["id"],))
+        graded_subs = c.fetchone()["graded_submissions"]
+        
+        # Get average score
+        c.execute("""
+            SELECT AVG(s.score) as avg_score
+            FROM submissions s
+            JOIN folders f ON s.folder_id = f.id
+            WHERE f.lecturer_id = ? AND s.score IS NOT NULL
+        """, (current_user["id"],))
+        avg_score = c.fetchone()["avg_score"] or 0
+        
+        # Get submissions by subject
+        c.execute("""
+            SELECT f.subject_code, COUNT(*) as count
+            FROM submissions s
+            JOIN folders f ON s.folder_id = f.id
+            WHERE f.lecturer_id = ?
+            GROUP BY f.subject_code
+        """, (current_user["id"],))
+        subject_counts = [dict(row) for row in c.fetchall()]
+        
+        return {
+            "total_submissions": total_subs,
+            "graded_submissions": graded_subs,
+            "average_score": round(avg_score, 2),
+            "submissions_by_subject": subject_counts
+        }
+        
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
