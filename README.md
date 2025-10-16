@@ -647,12 +647,3 @@ sudo ufw enable
 
 * Use HTTPS for all API calls.
 * Do not expose backend ports (3000/8000) publicly — always use NGINX proxy.
-
----
-
-## References
-
-* [FastAPI Documentation](https://fastapi.tiangolo.com/)
-* [NGINX Documentation](https://nginx.org/en/docs/)
-* [Certbot / Let's Encrypt](https://certbot.eff.org/)
-* [nip.io dynamic DNS](http://nip.io/)
