@@ -937,6 +937,10 @@ window.deleteAssignment = deleteAssignment;
         window.gradeSubmission = (id) => showNotification('Grading feature coming soon', 'info');
         window.filterStudents = filterStudents;
         window.closeModal = closeModal;
+        window.applyHistoricFilters = applyHistoricFilters;
+        window.clearHistoricFilters = clearHistoricFilters;
+        window.exportHistoricData = exportHistoricData;
+        window.viewSubmissionDetails = viewSubmissionDetails;
 
         // Close modal when clicking outside
         window.onclick = function(event) {
@@ -1636,3 +1640,264 @@ if (assignmentFilesInput) {
 document.addEventListener('DOMContentLoaded', () => {
     renderExistingLecturerFiles();
 });
+
+// Historic Directory Functions
+let historicSubmissions = [];
+let historicFilters = {
+    subject_code: '',
+    student_id: '',
+    date_from: '',
+    date_to: '',
+    status: ''
+};
+
+// Load historic data
+async function loadHistoricData(filters = {}) {
+    try {
+        console.log('📚 Loading historic directory data...');
+        
+        // Build query string from filters
+        const queryParams = new URLSearchParams();
+        Object.entries(filters).forEach(([key, value]) => {
+            if (value) queryParams.append(key, value);
+        });
+        
+        const [submissions, statistics] = await Promise.all([
+            apiCall(`/historic/submissions?${queryParams}`),
+            apiCall('/historic/statistics')
+        ]);
+        
+        historicSubmissions = submissions;
+        renderHistoricDirectory();
+        renderHistoricStatistics(statistics);
+        
+        console.log(`✅ Loaded ${submissions.length} historic submissions`);
+        
+    } catch (error) {
+        console.error('❌ Error loading historic data:', error);
+        showNotification('Failed to load historic directory data', 'error');
+    }
+}
+
+// Render historic directory
+function renderHistoricDirectory() {
+    const container = document.getElementById('historicDirectoryContent');
+    if (!container) return;
+    
+    if (historicSubmissions.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <div style="font-size: 48px; margin-bottom: 16px;">📊</div>
+                <h3>No Historic Submissions Found</h3>
+                <p>No submissions match your current filters.</p>
+                <button onclick="clearHistoricFilters()" class="ghost">Clear Filters</button>
+            </div>
+        `;
+        return;
+    }
+    
+    container.innerHTML = `
+        <div class="historic-header">
+            <div class="historic-meta">
+                Showing ${historicSubmissions.length} submission${historicSubmissions.length !== 1 ? 's' : ''}
+                ${historicFilters.subject_code ? `for ${historicFilters.subject_code}` : ''}
+            </div>
+            <button onclick="exportHistoricData()" class="success">
+                📥 Export Data
+            </button>
+        </div>
+        <div class="historic-list">
+            ${historicSubmissions.map(submission => `
+                <div class="historic-item" data-submission-id="${submission.id}">
+                    <div class="historic-main">
+                        <div class="historic-student">
+                            <strong>${submission.first_name} ${submission.last_name}</strong>
+                            <span class="small">${submission.email}</span>
+                        </div>
+                        <div class="historic-assignment">
+                            <div class="name">${submission.assignment_name}</div>
+                            <div class="meta">
+                                ${submission.subject_code} • 
+                                Submitted: ${new Date(submission.submitted_at).toLocaleString()} •
+                                ${submission.score !== null ? `Score: ${submission.score}/${submission.max_points}` : 'Not graded'}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="historic-actions">
+                        <span class="status-badge ${submission.status}">${submission.status}</span>
+                        <button onclick="viewSubmissionDetails(${submission.id})" class="ghost">
+                            View Details
+                        </button>
+                        ${submission.status !== 'graded' ? `
+                            <button onclick="gradeSubmission(${submission.id})" class="success">
+                                Grade
+                            </button>
+                        ` : ''}
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+// Render historic statistics
+function renderHistoricStatistics(statistics) {
+    const container = document.getElementById('historicStatistics');
+    if (!container) return;
+    
+    container.innerHTML = `
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-number">${statistics.total_submissions}</div>
+                <div class="stat-label">Total Submissions</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number">${statistics.graded_submissions}</div>
+                <div class="stat-label">Graded</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number">${statistics.average_score}</div>
+                <div class="stat-label">Average Score</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number">${statistics.submissions_by_subject.length}</div>
+                <div class="stat-label">Subjects</div>
+            </div>
+        </div>
+        
+        ${statistics.submissions_by_subject.length > 0 ? `
+            <div class="subject-breakdown">
+                <h4>Submissions by Subject</h4>
+                ${statistics.submissions_by_subject.map(subject => `
+                    <div class="subject-item">
+                        <span class="subject-name">${subject.subject_code}</span>
+                        <span class="subject-count">${subject.count} submissions</span>
+                    </div>
+                `).join('')}
+            </div>
+        ` : ''}
+    `;
+}
+
+// Filter historic data
+function applyHistoricFilters() {
+    const subjectFilter = document.getElementById('historicSubjectFilter')?.value || '';
+    const statusFilter = document.getElementById('historicStatusFilter')?.value || '';
+    const dateFromFilter = document.getElementById('historicDateFrom')?.value || '';
+    const dateToFilter = document.getElementById('historicDateTo')?.value || '';
+    
+    historicFilters = {
+        subject_code: subjectFilter,
+        status: statusFilter,
+        date_from: dateFromFilter,
+        date_to: dateToFilter
+    };
+    
+    loadHistoricData(historicFilters);
+}
+
+// Clear filters
+function clearHistoricFilters() {
+    historicFilters = {
+        subject_code: '',
+        student_id: '',
+        date_from: '',
+        date_to: '',
+        status: ''
+    };
+    
+    // Reset filter inputs
+    const subjectFilter = document.getElementById('historicSubjectFilter');
+    const statusFilter = document.getElementById('historicStatusFilter');
+    const dateFromFilter = document.getElementById('historicDateFrom');
+    const dateToFilter = document.getElementById('historicDateTo');
+    
+    if (subjectFilter) subjectFilter.value = '';
+    if (statusFilter) statusFilter.value = '';
+    if (dateFromFilter) dateFromFilter.value = '';
+    if (dateToFilter) dateToFilter.value = '';
+    
+    loadHistoricData(historicFilters);
+}
+
+// Export historic data
+function exportHistoricData() {
+    try {
+        const csvContent = convertToCSV(historicSubmissions);
+        const blob = new Blob([csvContent], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `historic-submissions-${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        
+        showNotification('Historic data exported successfully!', 'success');
+    } catch (error) {
+        console.error('Error exporting data:', error);
+        showNotification('Failed to export data', 'error');
+    }
+}
+
+// Convert data to CSV
+function convertToCSV(data) {
+    if (data.length === 0) return '';
+    
+    const headers = ['Student', 'Email', 'Subject', 'Assignment', 'Submitted', 'Score', 'Status', 'Feedback'];
+    const rows = data.map(item => [
+        `"${item.first_name} ${item.last_name}"`,
+        `"${item.email}"`,
+        `"${item.subject_code}"`,
+        `"${item.assignment_name}"`,
+        `"${new Date(item.submitted_at).toLocaleString()}"`,
+        item.score !== null ? `"${item.score}/${item.max_points}"` : '"Not graded"',
+        `"${item.status}"`,
+        `"${item.feedback || ''}"`
+    ]);
+    
+    return [headers, ...rows].map(row => row.join(',')).join('\n');
+}
+
+// View submission details
+function viewSubmissionDetails(submissionId) {
+    const submission = historicSubmissions.find(s => s.id === submissionId);
+    if (!submission) {
+        showNotification('Submission not found', 'error');
+        return;
+    }
+    
+    
+    const details = `
+        Student: ${submission.first_name} ${submission.last_name} (${submission.email})
+        Assignment: ${submission.assignment_name}
+        Subject: ${submission.subject_code}
+        Submitted: ${new Date(submission.submitted_at).toLocaleString()}
+        ${submission.score !== null ? `Score: ${submission.score}/${submission.max_points}` : 'Not graded yet'}
+        Status: ${submission.status}
+        ${submission.feedback ? `Feedback: ${submission.feedback}` : ''}
+    `;
+    
+    alert(details);
+}
+
+// Initialize historic directory
+function initializeHistoricDirectory() {
+    // This will be called when the historic directory tab is opened
+    loadHistoricData();
+    
+    // Populate subject filter
+    const subjectFilter = document.getElementById('historicSubjectFilter');
+    if (subjectFilter) {
+        subjectFilter.innerHTML = '<option value="">All Subjects</option>';
+        lecturerSubjects.forEach(subject => {
+            const option = document.createElement('option');
+            option.value = subject.code;
+            option.textContent = `${subject.code} - ${subject.name}`;
+            subjectFilter.appendChild(option);
+        });
+    }
+}
+
+

@@ -44,6 +44,7 @@
       <div style="display:flex;flex-direction:column;gap:8px">
         <button id="createAssignmentBtn">Create New Assignment</button>
         <button id="showAllSubs" class="ghost">View All Submissions</button>
+        <button id="openHistoricDirectory" class="ghost">📊 Historic Directory</button>
         <button id="refreshBtn" class="ghost">Refresh Subjects</button>
       </div>
     </aside>
@@ -184,6 +185,58 @@
         <button id="saveEnrollBtn" class="success">Enroll Selected</button>
       </div>
     </div>
+  </div>
+
+    
+  <!-- Historic Directory Modal -->
+  <div id="historicDirectoryModal" class="modal" style="display: none;">
+      <div class="modal-content large-modal">
+          <div class="modal-header">
+              <h2>📊 Historic Directory</h2>
+              <span class="close" onclick="closeModal('historicDirectoryModal')">&times;</span>
+          </div>
+          
+          <div class="modal-body scrollable">
+              <!-- Filters section -->
+              <div class="filters-section">
+                  <h4>Filters</h4>
+                  <div class="filters-grid">
+                      <div class="form-group">
+                          <label>Subject</label>
+                          <select id="historicSubjectFilter">
+                              <option value="">All Subjects</option>
+                          </select>
+                      </div>
+                      <div class="form-group">
+                          <label>Status</label>
+                          <select id="historicStatusFilter" onchange="applyHistoricFilters()">
+                              <option value="">All Status</option>
+                              <option value="submitted">Submitted</option>
+                              <option value="graded">Graded</option>
+                          </select>
+                      </div>
+                      <div class="form-group">
+                          <label>From Date</label>
+                          <input type="date" id="historicDateFrom" onchange="applyHistoricFilters()">
+                      </div>
+                      <div class="form-group">
+                          <label>To Date</label>
+                          <input type="date" id="historicDateTo" onchange="applyHistoricFilters()">
+                      </div>
+                  </div>
+                  <div class="filters-actions">
+                      <button onclick="applyHistoricFilters()" class="success">Apply Filters</button>
+                      <button onclick="clearHistoricFilters()" class="ghost">Clear Filters</button>
+                  </div>
+              </div>
+              
+              <!-- Statistics -->
+              <div id="historicStatistics"></div>
+              
+              <!-- Content -->
+              <div id="historicDirectoryContent"></div>
+          </div>
+      </div>
   </div>
 
   <!-- Notification -->
