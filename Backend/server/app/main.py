@@ -212,7 +212,7 @@ def init_db():
         print("👨‍🎓 INIT_DB: Creating hardcoded students...")
         now = now_iso()
         students = [
-                       {
+            {
                 "username": "student_david",
                 "email": "david.miller@student.automark.com",
                 "password": "davidpass123",
