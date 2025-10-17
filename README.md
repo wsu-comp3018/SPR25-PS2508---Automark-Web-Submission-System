@@ -436,7 +436,7 @@ pip install -r requirements.txt
 4. Start the backend locally:
 
 ```bash
-uvicorn main:app --reload --host 127.0.0.1 --port 3000
+uvicorn app.main:app --reload --host 127.0.0.1 --port 3000
 ```
 
 5. Open `login-register.html` in your browser and verify the app works on `http://localhost:3000`.
