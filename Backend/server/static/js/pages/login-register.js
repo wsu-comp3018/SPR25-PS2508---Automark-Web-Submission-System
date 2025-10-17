@@ -126,7 +126,7 @@ window.showForgotPassword = function showForgotPassword() {
 // -------------------------------
 // Backend API calls (FastAPI)
 // -------------------------------
-const API_BASE = "https://54-197-160-146.nip.io/api/v1/auth";
+const API_BASE = "http://localhost:8000/api/v1/auth";
 
 async function apiRegister(payload) {
   const res = await fetch(`${API_BASE}/register`, {
