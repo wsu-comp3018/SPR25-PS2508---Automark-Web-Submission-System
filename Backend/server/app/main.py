@@ -2250,12 +2250,16 @@ def _run_svn_job(job_id: int):
 @app.post("/api/v1/submissions/receive_svn")
 def receive_submission_svn(body: SVNJobIn):
     """Called by SVN post-commit (or poller) to trigger a sandbox run."""
+    logger.info(f"📥 Received SVN submission: student={body.student_username}, folder_id={body.folder_id}, revision={body.revision}")
+    logger.info(f"🔗 SVN URL: {body.svn_url}")
+    
     now = now_iso()
     conn = sqlite3.connect(DB_PATH); c = conn.cursor()
     try:
         # basic validation: folder exists
         c.execute("SELECT id FROM folders WHERE id = ?", (body.folder_id,))
         if not c.fetchone():
+            logger.error(f"❌ Folder {body.folder_id} not found for SVN submission")
             raise HTTPException(404, "Folder not found")
 
         c.execute("""INSERT INTO svn_jobs(folder_id, student_username, svn_url, revision, status, created_at)
@@ -2263,10 +2267,12 @@ def receive_submission_svn(body: SVNJobIn):
                   (body.folder_id, body.student_username, body.svn_url, int(body.revision), now))
         job_id = c.lastrowid
         conn.commit()
+        logger.info(f"✅ Created job {job_id} for SVN submission")
     finally:
         conn.close()
 
     # kick off a background thread for this job
+    logger.info(f"🚀 Starting background thread for job {job_id}")
     threading.Thread(target=_run_svn_job, args=(job_id,), daemon=True).start()
     return {"job_id": job_id, "status": "queued"}
 
