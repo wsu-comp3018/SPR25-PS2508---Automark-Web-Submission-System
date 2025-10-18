@@ -2191,6 +2191,81 @@ class SVNJobIn(BaseModel):
     svn_url: str
     revision: int
 
+def _process_svn_job_results(job_id: int, folder_id: int, svn_url: str, revision: int, results_dir):
+    """Process SVN job results and create/update submission in database."""
+    try:
+        # Get student username from SVN job
+        conn = sqlite3.connect(DB_PATH); c = conn.cursor()
+        c.execute("SELECT student_username FROM svn_jobs WHERE id = ?", (job_id,))
+        row = c.fetchone()
+        if not row:
+            logger.error(f"❌ Could not find SVN job {job_id}")
+            return
+        student_username = row[0]
+        
+        # Find student_id from username
+        c.execute("SELECT id FROM users WHERE username = ? AND role = 'student'", (student_username,))
+        student_row = c.fetchone()
+        if not student_row:
+            logger.error(f"❌ Could not find student with username {student_username}")
+            return
+        student_id = student_row[0]
+        
+        # Read result.json if it exists
+        result_file = results_dir / "result.json"
+        score = None
+        feedback = None
+        status = "submitted"
+        
+        if result_file.exists():
+            try:
+                result_data = json.loads(result_file.read_text())
+                score = result_data.get("score")
+                feedback = result_data.get("message", "")
+                if result_data.get("ok", False):
+                    status = "graded"
+                logger.info(f"📊 Processed result.json: score={score}, feedback={feedback[:50]}...")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse result.json: {e}")
+                feedback = f"Error parsing results: {e}"
+        
+        # Create or update submission
+        now = now_iso()
+        c.execute("""
+            SELECT id FROM submissions 
+            WHERE folder_id = ? AND student_id = ? 
+            ORDER BY id DESC LIMIT 1
+        """, (folder_id, student_id))
+        existing_sub = c.fetchone()
+        
+        if existing_sub:
+            # Update existing submission
+            c.execute("""
+                UPDATE submissions 
+                SET score = ?, feedback = ?, status = ?, graded_at = ?
+                WHERE id = ?
+            """, (score, feedback, status, now, existing_sub[0]))
+            submission_id = existing_sub[0]
+            logger.info(f"✅ Updated submission {submission_id} for student {student_username}")
+        else:
+            # Create new submission
+            c.execute("""
+                INSERT INTO submissions (folder_id, student_id, submitted_at, score, feedback, status, graded_at, revisions)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            """, (folder_id, student_id, now, score, feedback, status, now))
+            submission_id = c.lastrowid
+            logger.info(f"✅ Created submission {submission_id} for student {student_username}")
+        
+        conn.commit()
+        logger.info(f"🎯 SVN job {job_id} results processed successfully")
+        
+    except Exception as e:
+        logger.error(f"❌ Error processing SVN job {job_id} results: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        conn.close()
+
 def _run_svn_job(job_id: int):
     """Export code from SVN and run marker in a fresh Docker container."""
     # update -> running
@@ -2244,6 +2319,10 @@ def _run_svn_job(job_id: int):
                    now_iso(),
                    job_id))
         conn.commit()
+        
+        # NEW: Process results if job completed successfully
+        if exit_code == 0:
+            _process_svn_job_results(job_id, folder_id, svn_url, revision, results_dir)
     finally:
         conn.close()
 
