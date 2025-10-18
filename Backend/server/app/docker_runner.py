@@ -54,16 +54,16 @@ def run_job(job_id: int, code_dir, marker_dir, results_dir) -> Tuple[int, str]:
 
     # Single shell does:
     # - ensure results dir exists and is writable
-    # - run marker if run.sh is executable
+    # - run marker if markerscript.sh is executable
     cmd = [
-        "bash", "-lc",
+        "sh", "-c",
         (
-            "set -euo pipefail; "
+            "set -e; "
             f"mkdir -p '{in_results}'; chmod -R 777 '{in_results}' || true; "
-            f"if [ -x '{in_marker}/run.sh' ]; then "
-            f"  RESULT_DIR='{in_results}' CODE_DIR='{in_code}' MARKER_DIR='{in_marker}' '{in_marker}/run.sh'; "
+            f"if [ -x '{in_marker}/markerscript.sh' ]; then "
+            f"  RESULT_DIR='{in_results}' CODE_DIR='{in_code}' MARKER_DIR='{in_marker}' '{in_marker}/markerscript.sh'; "
             "else "
-            f"  echo 'No executable run.sh at {in_marker}'; exit 2; "
+            f"  echo 'No executable markerscript.sh at {in_marker}'; exit 2; "
             "fi"
         )
     ]

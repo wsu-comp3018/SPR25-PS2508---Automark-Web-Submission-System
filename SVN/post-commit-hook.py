@@ -1,168 +1,244 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """
 SVN Post-commit hook for AutoMark submission collection
 
 This script runs after each SVN commit and:
 1. Extracts the commit information (author, revision, files)
-2. Copies the committed files to the submissions collection area
-3. Notifies the AutoMark API of the new submission
+2. Parses the repository path to determine assignment and student
+3. Calls the AutoMark API to trigger grading
 """
 
 import sys
 import os
 import subprocess
 import json
-import shutil
+import re
+import sqlite3
 from datetime import datetime
-from pathlib import Path
 
-def run_command(cmd):
+def run_command(cmd_list):
     """Run a shell command and return output"""
     try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        result = subprocess.run(cmd_list, capture_output=True, text=True)
         return result.stdout.strip(), result.stderr.strip(), result.returncode
     except Exception as e:
         return "", str(e), 1
 
 def extract_commit_info(repo_path, revision):
     """Extract commit information from SVN"""
-    cmd = f'svn log -r {revision} --xml "{repo_path}"'
+    # Get commit author
+    cmd = ['svnlook', 'author', repo_path, '-r', str(revision)]
     stdout, stderr, returncode = run_command(cmd)
     
     if returncode != 0:
-        print(f"Error getting commit info: {stderr}")
+        print(f"Error getting commit author: {stderr}")
         return None
     
-    # Parse commit info (simplified - in production use proper XML parsing)
-    lines = stdout.split('\n')
-    author = None
-    date = None
-    message = None
+    author = stdout.strip()
     
-    for line in lines:
-        if 'author=' in line:
-            author = line.split('author="')[1].split('"')[0] if 'author="' in line else None
-        elif 'date=' in line:
-            date = line.split('date="')[1].split('"')[0] if 'date="' in line else None
-        elif '<msg>' in line and '</msg>' in line:
-            message = line.replace('<msg>', '').replace('</msg>', '').strip()
+    # Get commit message
+    cmd = ['svnlook', 'log', repo_path, '-r', str(revision)]
+    stdout, stderr, returncode = run_command(cmd)
+    message = stdout.strip() if returncode == 0 else ""
     
     return {
         'revision': revision,
         'author': author,
-        'date': date,
         'message': message
     }
 
-def get_changed_files(repo_path, revision):
-    """Get list of files changed in this revision"""
-    cmd = f'svn diff -r {int(revision)-1}:{revision} --summarize "{repo_path}"'
+def parse_svn_path(repo_path, revision):
+    """Parse SVN repository path to extract assignment information"""
+    # Get changed paths in this revision
+    cmd = ['svnlook', 'changed', repo_path, '-r', str(revision)]
     stdout, stderr, returncode = run_command(cmd)
     
     if returncode != 0:
-        return []
+        print(f"Error getting changed paths: {stderr}")
+        return None
     
-    files = []
+    # Look for student repository paths
+    # Format: "U   student-repos/2025-AUT-COMP_0067-Assignment1/student_david/main.py"
+    student_repo_pattern = r'student-repos/(\d{4}-(AUT|SPR)-([A-Z0-9_]+)-Assignment(\d+))/([^/]+)'
+    
     for line in stdout.split('\n'):
-        if line.strip():
-            # Format: "M    /path/to/file" or "A    /path/to/file"
-            parts = line.split()
-            if len(parts) >= 2:
-                files.append(parts[1])
+        if 'student-repos/' in line:
+            match = re.search(student_repo_pattern, line)
+            if match:
+                year_sem_subject_assignment = match.group(1)  # 2025-AUT-COMP_0067-Assignment1
+                semester = match.group(2)  # AUT
+                subject_code = match.group(3)  # COMP_0067
+                assignment_number = int(match.group(4))  # 1
+                student_username = match.group(5)  # student_david
+                
+                return {
+                    'year_sem_subject_assignment': year_sem_subject_assignment,
+                    'year': year_sem_subject_assignment.split('-')[0],
+                    'semester': semester,
+                    'subject_code': subject_code,
+                    'assignment_number': assignment_number,
+                    'student_username': student_username,
+                    'svn_path': f"student-repos/{year_sem_subject_assignment}/{student_username}"
+                }
     
-    return files
+    return None
 
-def export_revision(repo_path, revision, export_path):
-    """Export a specific revision to a directory"""
-    cmd = f'svn export -r {revision} "{repo_path}" "{export_path}" --force'
-    stdout, stderr, returncode = run_command(cmd)
-    return returncode == 0
-
-def collect_submission(repo_path, revision, commit_info):
-    """Collect the submission files and organize them"""
-    
-    # Parse the repository path to understand what was submitted
-    # Expected path format: student working copy in SSH container
-    # We need to determine: student, subject, assignment
-    
-    author = commit_info['author']
-    timestamp = datetime.now().isoformat()
-    
-    # For now, assume this is a student submission
-    # In a full implementation, we'd parse the path to determine the assignment
-    
-    print(f"📝 Processing submission from {author}, revision {revision}")
-    
-    # Create submission directory structure
-    submissions_base = "/var/submissions"
-    submission_dir = f"{submissions_base}/temp/{author}/r{revision}_{timestamp}"
-    
+def get_folder_id_from_assignment(subject_code, assignment_number, year, semester):
+    """Query the database to find the folder_id for this assignment"""
     try:
-        os.makedirs(submission_dir, exist_ok=True)
+        # Connect to the database (mounted volume in docker-compose)
+        db_path = "/app/data/automark.db"
+        if not os.path.exists(db_path):
+            print(f"Database not found at {db_path}")
+            return None
         
-        # Export the revision
-        if export_revision(repo_path, revision, submission_dir):
-            print(f"✅ Exported revision {revision} to {submission_dir}")
-            
-            # Create metadata file
-            metadata = {
-                'revision': revision,
-                'author': author,
-                'timestamp': timestamp,
-                'commit_message': commit_info['message'],
-                'commit_date': commit_info['date']
-            }
-            
-            with open(f"{submission_dir}/submission_metadata.json", 'w') as f:
-                json.dump(metadata, f, indent=2)
-            
-            print(f"✅ Submission collected for {author}")
-            
-            # TODO: Notify AutoMark API of new submission
-            # notify_automark_api(metadata)
-            
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        # Query for the folder that matches this assignment
+        c.execute("""
+            SELECT f.id, f.name, f.subject_code, f.assignment_number
+            FROM folders f
+            WHERE f.subject_code = ? AND f.assignment_number = ?
+            ORDER BY f.created_at DESC
+            LIMIT 1
+        """, (subject_code, assignment_number))
+        
+        row = c.fetchone()
+        conn.close()
+        
+        if row:
+            folder_id = row['id']
+            print(f"Found folder_id {folder_id} for {subject_code} Assignment{assignment_number}")
+            return folder_id
         else:
-            print(f"❌ Failed to export revision {revision}")
+            print(f"Warning: Could not find folder_id for {subject_code} Assignment{assignment_number}")
+            return None
+        
+    except Exception as e:
+        print(f"Error querying database for folder_id: {e}")
+        return None
+
+def notify_automark_api(assignment_info, commit_info):
+    """Notify the AutoMark API of a new submission"""
+    try:
+        # Get folder_id from assignment info
+        folder_id = get_folder_id_from_assignment(
+            assignment_info['subject_code'],
+            assignment_info['assignment_number'],
+            assignment_info['year'],
+            assignment_info['semester']
+        )
+        
+        if not folder_id:
+            print(f"❌ Could not determine folder_id for assignment")
+            return False
+        
+        # Prepare the API call
+        api_url = "http://automark-api:8000/api/v1/submissions/receive_svn"
+        
+        payload = {
+            "folder_id": folder_id,
+            "student_username": assignment_info['student_username'],
+            "svn_url": f"svn://automark-svn/automark/{assignment_info['svn_path']}",
+            "revision": commit_info['revision']
+        }
+        
+        print(f"📡 Calling API: {api_url}")
+        print(f"📦 Payload: {json.dumps(payload, indent=2)}")
+        
+        # Use curl instead of requests to avoid import issues
+        curl_cmd = [
+            'curl', '-X', 'POST', api_url,
+            '-H', 'Content-Type: application/json',
+            '-d', json.dumps(payload),
+            '--connect-timeout', '10',
+            '--max-time', '30'
+        ]
+        
+        stdout, stderr, returncode = run_command(curl_cmd)
+        
+        if returncode == 0:
+            print(f"✅ API call successful: {stdout}")
+            return True
+        else:
+            print(f"❌ API call failed: {stderr}")
+            return False
             
     except Exception as e:
-        print(f"❌ Error collecting submission: {e}")
-
-def notify_automark_api(submission_metadata):
-    """Notify the AutoMark API of a new submission"""
-    # TODO: Make HTTP request to API endpoint
-    # This would include:
-    # - Student ID
-    # - Assignment ID  
-    # - Submission path
-    # - Commit metadata
-    pass
+        print(f"❌ Error calling AutoMark API: {e}")
+        return False
 
 def main():
     """Main post-commit hook function"""
-    if len(sys.argv) != 3:
-        print("Usage: post-commit-hook.py <repo-path> <revision>")
+    # Debug: Write to a file to see if hook is being called
+    try:
+        with open('/tmp/hook-debug.log', 'a') as f:
+            f.write(f"Hook called with args: {sys.argv}\n")
+            f.write(f"Python path: {sys.executable}\n")
+            f.write(f"Working directory: {os.getcwd()}\n")
+    except Exception as e:
+        try:
+            with open('/tmp/hook-error.log', 'a') as f:
+                f.write(f"Debug write failed: {e}\n")
+        except:
+            pass
+    
+    try:
+        if len(sys.argv) < 3:
+            print("Usage: post-commit-hook.py <repo-path> <revision> [transaction]")
+            sys.exit(1)
+    
+        repo_path = sys.argv[1]
+        revision = sys.argv[2]
+        
+        print(f"🔄 SVN Post-commit hook triggered")
+        print(f"📁 Repository: {repo_path}")
+        print(f"📄 Revision: {revision}")
+        
+        # Extract commit information
+        commit_info = extract_commit_info(repo_path, revision)
+        if not commit_info:
+            print("❌ Failed to extract commit information")
+            sys.exit(1)
+        
+        print(f"👤 Author: {commit_info['author']}")
+        print(f"💬 Message: {commit_info['message']}")
+        
+        # Parse the SVN path to determine assignment
+        assignment_info = parse_svn_path(repo_path, revision)
+        if not assignment_info:
+            print("❌ Could not parse assignment information from SVN path")
+            print("ℹ️  This might not be a student submission commit")
+            sys.exit(0)  # Not an error, just not a student submission
+        
+        print(f"📚 Assignment: {assignment_info['subject_code']} Assignment{assignment_info['assignment_number']}")
+        print(f"👨‍🎓 Student: {assignment_info['student_username']}")
+        print(f"📅 Year/Semester: {assignment_info['year']} {assignment_info['semester']}")
+        
+        # Notify the AutoMark API
+        success = notify_automark_api(assignment_info, commit_info)
+        
+        if success:
+            print("✅ Post-commit hook completed successfully")
+            sys.exit(0)
+        else:
+            print("❌ Post-commit hook failed")
+            sys.exit(1)
+    
+    except Exception as e:
+        # Log the error to a file
+        try:
+            with open('/tmp/hook-error.log', 'a') as f:
+                f.write(f"Hook error: {e}\n")
+                f.write(f"Args: {sys.argv}\n")
+                import traceback
+                f.write(f"Traceback: {traceback.format_exc()}\n")
+        except:
+            pass
+        print(f"❌ Hook failed with error: {e}")
         sys.exit(1)
-    
-    repo_path = sys.argv[1]
-    revision = sys.argv[2]
-    
-    print(f"🔄 SVN Post-commit hook triggered")
-    print(f"📁 Repository: {repo_path}")
-    print(f"📄 Revision: {revision}")
-    
-    # Extract commit information
-    commit_info = extract_commit_info(repo_path, revision)
-    if not commit_info:
-        print("❌ Failed to extract commit information")
-        sys.exit(1)
-    
-    print(f"👤 Author: {commit_info['author']}")
-    print(f"💬 Message: {commit_info['message']}")
-    
-    # Collect the submission
-    collect_submission(repo_path, revision, commit_info)
-    
-    print("✅ Post-commit hook completed")
 
 if __name__ == "__main__":
     main()

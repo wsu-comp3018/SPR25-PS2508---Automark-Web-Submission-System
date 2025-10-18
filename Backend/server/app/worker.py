@@ -13,7 +13,8 @@ from . import storage, docker_runner
 def svn_export(url: str, rev: int, dest: str):
     # Export the exact revision to dest, overwriting if exists
     subprocess.run(
-        ["svn", "export", "-r", str(rev), url, dest, "--force"],
+        ["svn", "export", "-r", str(rev), url, dest, "--force", 
+         "--username", "admin", "--password", "adminpass123", "--no-auth-cache"],
         check=True, text=True, capture_output=True
     )
 

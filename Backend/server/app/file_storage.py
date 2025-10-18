@@ -102,15 +102,14 @@ def copy_marker_files_to_assignment(
             logger.warning(f"Source file not found: {source_path}")
             continue
         
-        # Copy to marker directory, preserving original filename
-        dest_path = marker_dir / source_path.name
+        # Copy to marker directory as markerscript.sh (standardized name)
+        dest_path = marker_dir / "markerscript.sh"
         shutil.copy2(source_path, dest_path)
         
-        # Ensure scripts are executable
-        if source_path.suffix in ['.sh', '.py', '.bash']:
-            os.chmod(dest_path, 0o755)
+        # Ensure the script is executable
+        os.chmod(dest_path, 0o755)
         
-        logger.info(f"Copied marker file: {source_path.name} -> {dest_path}")
+        logger.info(f"Copied marker file: {source_path.name} -> markerscript.sh")
     
     return marker_dir
 

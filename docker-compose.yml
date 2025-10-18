@@ -81,6 +81,10 @@ services:
       - automark-svn-config:/etc/subversion
       # Shared access to collect submissions
       - automark-submissions:/var/submissions
+      # Database access for post-commit hook
+      - automark-data:/app/data
+      # Live hook file for development/prototype (always up-to-date)
+      - ./SVN/post-commit-hook.py:/var/svn/hooks/post-commit-live.py:ro
     networks:
       - automark-network
     restart: unless-stopped
@@ -112,6 +116,19 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # Sandbox container for running marker scripts
+  automark-sandbox:
+    build:
+      context: ./Backend/sandbox
+      dockerfile: Dockerfile
+    image: automark-job:latest
+    container_name: automark-sandbox
+    # This service doesn't run continuously, it's used by the API for job execution
+    command: ["tail", "-f", "/dev/null"]
+    networks:
+      - automark-network
+    restart: "no"
 
 volumes:
   automark-data:
