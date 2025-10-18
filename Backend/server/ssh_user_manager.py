@@ -125,53 +125,49 @@ class SSHUserManager:
         }
         
         try:
+            import docker
+            
+            # Connect to Docker daemon
+            client = docker.from_env()
+            
+            # Get the SVN container
+            svn_container = client.containers.get("automark-svn")
+            
             # Check if user already exists in SVN passwd file
-            check_cmd = ["docker", "exec", "automark-svn", "grep", f"^{username} =", "/etc/subversion/passwd"]
-            check_result = subprocess.run(check_cmd, capture_output=True, text=True)
+            check_result = svn_container.exec_run(f"grep '^{username} =' /etc/subversion/passwd")
+            user_exists = check_result.exit_code == 0
             
-            if check_result.returncode == 0:
-                result["success"] = True
-                result["message"] = f"User {username} already exists in SVN authentication"
-                return result
-            
-            # Add user to SVN passwd file
-            add_cmd = [
-                "docker", "exec", "automark-svn",
-                "bash", "-c", f"echo '{username} = {password}' >> /etc/subversion/passwd"
-            ]
-            add_result = subprocess.run(add_cmd, capture_output=True, text=True, timeout=10)
-            
-            if add_result.returncode != 0:
-                result["error"] = f"Failed to add user to SVN passwd: {add_result.stderr}"
-                return result
+            # Add user to SVN passwd file only if they don't exist
+            if not user_exists:
+                add_passwd_result = svn_container.exec_run(f"bash -c 'echo \"{username} = {password}\" >> /etc/subversion/passwd'")
+                if add_passwd_result.exit_code != 0:
+                    result["error"] = f"Failed to add user to SVN passwd: {add_passwd_result.output.decode()}"
+                    return result
             
             # Add user to students group in authz file
-            authz_cmd = [
-                "docker", "exec", "automark-svn",
-                "bash", "-c", f"""
-                # Check if students group is empty and add user appropriately
-                if grep -q '^students = $' /etc/subversion/authz; then
-                    # Students group is empty, add first user
-                    sed -i 's/^students = $/students = {username}/' /etc/subversion/authz
-                else
-                    # Add to existing students group
-                    sed -i 's/^students = .*/&,{username}/' /etc/subversion/authz
+            # First check if students group is empty
+            check_empty = svn_container.exec_run("grep '^students = $' /etc/subversion/authz")
+            if check_empty.exit_code == 0:
+                # Students group is empty, add first user
+                authz_result = svn_container.exec_run(f"sed -i 's/^students = $/students = {username}/' /etc/subversion/authz")
+            else:
+                # Check if user is already in students group
+                check_user = svn_container.exec_run(f"grep '{username}' /etc/subversion/authz")
+                if check_user.exit_code != 0:
+                    # User not in group, add them
+                    authz_result = svn_container.exec_run(f"sed -i 's/^students = .*/&,{username}/' /etc/subversion/authz")
                     # Clean up any double commas
-                    sed -i 's/,,/,/g' /etc/subversion/authz
-                fi
-                """
-            ]
-            authz_result = subprocess.run(authz_cmd, capture_output=True, text=True, timeout=10)
-            
-            if authz_result.returncode != 0:
-                logger.warning(f"Failed to update authz file for {username}: {authz_result.stderr}")
+                    svn_container.exec_run("sed -i 's/,,/,/g' /etc/subversion/authz")
+                else:
+                    # User already in group, no action needed
+                    authz_result = type('obj', (object,), {'exit_code': 0})()
+            if authz_result.exit_code != 0:
+                logger.warning(f"Failed to update authz file for {username}: {authz_result.output.decode()}")
             
             result["success"] = True
             result["message"] = f"Added {username} to SVN authentication"
             logger.info(f"Added {username} to SVN authentication system")
             
-        except subprocess.TimeoutExpired:
-            result["error"] = "SVN authentication update timed out"
         except Exception as e:
             result["error"] = f"Error updating SVN authentication: {str(e)}"
             logger.error(f"Error adding {username} to SVN auth: {e}")
@@ -236,6 +232,9 @@ def create_student_submission_repo(username: str, assignment_path: str) -> Dict[
     
     This uses 'svn copy' to preserve ancestry, eliminating switch issues
     """
+    import tempfile
+    import os
+    
     result = {
         "success": False,
         "message": "",
@@ -246,36 +245,48 @@ def create_student_submission_repo(username: str, assignment_path: str) -> Dict[
         template_path = f"templates/{assignment_path}"
         student_repo_path = f"student-repos/{assignment_path}/{username}"
         
-        # Copy template to student repository using svn copy (preserves ancestry)
-        cmd = [
-            "docker", "exec", "automark-svn",
-            "bash", "-c", f"""
-            set -e
-            cd /tmpd 
+        # Create temporary working directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            work_dir = os.path.join(temp_dir, "svn-setup")
             
             # First, create parent directory structure if it doesn't exist
-            svn checkout file:///var/svn/repositories/automark svn-setup --force
+            checkout_cmd = [
+                "svn", "checkout", "svn://automark-svn/automark", work_dir, "--force",
+                "--username", "admin", "--password", "adminpass123", "--no-auth-cache"
+            ]
+            checkout_result = subprocess.run(checkout_cmd, capture_output=True, text=True, timeout=30)
+            
+            if checkout_result.returncode != 0:
+                result["error"] = f"Failed to checkout repository: {checkout_result.stderr}"
+                return result
             
             # Create parent directories
-            mkdir -p "svn-setup/student-repos/{assignment_path}"
+            parent_dir = os.path.join(work_dir, "student-repos", assignment_path)
+            os.makedirs(parent_dir, exist_ok=True)
             
-            cd svn-setup
-            svn add "student-repos/{assignment_path}" --parents --force 2>/dev/null || true
-            svn commit -m "Create parent directory for {assignment_path}" --username admin --password adminpass123 --no-auth-cache 2>/dev/null || true
+            # Add parent directory to SVN
+            add_cmd = [
+                "svn", "add", f"student-repos/{assignment_path}", "--parents", "--force"
+            ]
+            add_result = subprocess.run(add_cmd, cwd=work_dir, capture_output=True, text=True, timeout=20)
             
-            # Clean up working copy
-            cd /tmp
-            rm -rf svn-setup
+            # Commit parent directory (ignore if already exists)
+            if add_result.returncode == 0:
+                commit_cmd = [
+                    "svn", "commit", "-m", f"Create parent directory for {assignment_path}",
+                    "--username", "admin", "--password", "adminpass123", "--no-auth-cache"
+                ]
+                subprocess.run(commit_cmd, cwd=work_dir, capture_output=True, text=True, timeout=20)
             
             # Now use svn copy to create student repo from template (preserves ancestry!)
-            svn copy file:///var/svn/repositories/automark/{template_path} \
-                     file:///var/svn/repositories/automark/{student_repo_path} \
-                     -m "Create submission repository for {username} from {assignment_path} template" \
-                     --username admin --password adminpass123 --no-auth-cache
-            """
-        ]
-        
-        cmd_result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            copy_cmd = [
+                "svn", "copy", f"svn://automark-svn/automark/{template_path}",
+                f"svn://automark-svn/automark/{student_repo_path}",
+                "-m", f"Create submission repository for {username} from {assignment_path} template",
+                "--username", "admin", "--password", "adminpass123", "--no-auth-cache"
+            ]
+            
+            cmd_result = subprocess.run(copy_cmd, capture_output=True, text=True, timeout=30)
         
         if cmd_result.returncode != 0:
             result["error"] = f"Failed to create student repository: {cmd_result.stderr}"

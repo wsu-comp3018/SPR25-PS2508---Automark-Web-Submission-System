@@ -77,6 +77,8 @@ services:
     volumes:
       # SVN repositories
       - automark-svn-repos:/var/svn
+      # SVN configuration (for persistent user authentication)
+      - automark-svn-config:/etc/subversion
       # Shared access to collect submissions
       - automark-submissions:/var/submissions
     networks:
@@ -120,6 +122,8 @@ volumes:
     name: automark-submissions
   automark-svn-repos:
     name: automark-svn-repos
+  automark-svn-config:
+    name: automark-svn-config
   automark-assignments:
     name: automark-assignments
   automark-results:

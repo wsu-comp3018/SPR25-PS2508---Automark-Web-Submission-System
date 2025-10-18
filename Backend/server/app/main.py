@@ -108,8 +108,11 @@ def init_db():
                 updated_at TEXT NOT NULL,
                 lecturer_id INTEGER NOT NULL,
                 subject_code TEXT NOT NULL,
+                template_id INTEGER,
+                assignment_number INTEGER,
                 FOREIGN KEY (lecturer_id) REFERENCES users(id),
-                FOREIGN KEY (subject_code) REFERENCES subjects(code)
+                FOREIGN KEY (subject_code) REFERENCES subjects(code),
+                FOREIGN KEY (template_id) REFERENCES assignment_templates(id)
             )
         """)
         
@@ -180,7 +183,9 @@ def init_db():
         })
         # NEW: add lecturer_file_ids column to folders if missing
         ensure_columns("folders", {
-            "lecturer_file_ids": "TEXT"   # JSON array of file IDs (marker / reference files)
+            "lecturer_file_ids": "TEXT",   # JSON array of file IDs (marker / reference files)
+            "template_id": "INTEGER",       # Link to assignment_templates table
+            "assignment_number": "INTEGER"  # Assignment number for this subject
         })
 
         print("📝 INIT_DB: Creating subjects table...")
@@ -664,6 +669,9 @@ class FolderCreate(BaseModel):
     subject_code: str
     student_ids: List[int] = []
     files: Optional[List["FileCreate"]] = []  # NEW: lecturer-only files (e.g., marker script)
+    create_svn_template: bool = True  # NEW: Auto-create SVN template and student repos
+    assignment_number: Optional[int] = None  # NEW: Assignment number (auto-detect if None)
+    template_files: Optional[Dict[str, str]] = None  # NEW: Custom template files for SVN
 
 class FolderUpdate(BaseModel):
     name: Optional[str] = None
@@ -1112,7 +1120,7 @@ def get_student_folders(current_user: dict = Depends(get_current_user)):
 
 @app.post("/api/v1/folders")
 async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_current_user)):
-    """Create a new assignment folder (optionally with lecturer marker/reference files)."""
+    """Create a new assignment folder with optional SVN template creation."""
     if current_user["role"] != "lecturer":
         raise HTTPException(status_code=403, detail="Only lecturers can create folders")
 
@@ -1121,11 +1129,34 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     try:
+        # Get subject info and determine assignment number
+        c.execute("SELECT id, code, name FROM subjects WHERE code = ?", (folder.subject_code.strip(),))
+        subject_result = c.fetchone()
+        if not subject_result:
+            raise HTTPException(404, f"Subject {folder.subject_code} not found")
+        
+        subject_id = subject_result["id"] if isinstance(subject_result, sqlite3.Row) else subject_result[0]
+        subject_code = subject_result["code"] if isinstance(subject_result, sqlite3.Row) else subject_result[1]
+        
+        # Auto-detect assignment number if not provided
+        assignment_number = folder.assignment_number
+        if assignment_number is None:
+            c.execute("""
+                SELECT MAX(assignment_number) 
+                FROM folders 
+                WHERE subject_code = ? AND lecturer_id = ?
+            """, (folder.subject_code.strip(), current_user["id"]))
+            max_num = c.fetchone()[0]
+            assignment_number = (max_num or 0) + 1
+        
         now = now_iso()
+        semester, year = current_semester_year()
+        
         c.execute("""
             INSERT INTO folders (name, description, due_date, max_points, status,
-                                 created_at, updated_at, lecturer_id, subject_code, lecturer_file_ids)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 created_at, updated_at, lecturer_id, subject_code, 
+                                 lecturer_file_ids, assignment_number, template_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             folder.name.strip(),
             (folder.description or None),
@@ -1136,7 +1167,9 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
             now,
             current_user["id"],
             folder.subject_code.strip(),
-            None  # placeholder; update after file insert
+            None,  # placeholder; update after file insert
+            assignment_number,
+            None  # placeholder; update after template creation
         ))
         folder_id = c.lastrowid
 
@@ -1186,6 +1219,95 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
                 logger.info(f"Marker files copied to: {marker_dir}")
             except Exception as e:
                 logger.error(f"Failed to copy marker files for folder {folder_id}: {e}")
+        
+        # NEW: Create SVN template and student repositories if requested
+        template_id = None
+        svn_created = False
+        students_updated = 0
+        
+        if folder.create_svn_template:
+            try:
+                # Create assignment template in database
+                svn_path = f"templates/{year}-{semester}-{subject_code}-Assignment{assignment_number}"
+                
+                c.execute("""
+                    INSERT INTO assignment_templates 
+                    (subject_id, name, description, semester, year, assignment_number, 
+                     svn_path, due_date, max_points, status, created_at, updated_at, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    subject_id,
+                    folder.name.strip(),
+                    folder.description,
+                    semester,
+                    year,
+                    assignment_number,
+                    svn_path,
+                    folder.due_date,
+                    folder.max_points,
+                    'draft' if folder.status == 'draft' else 'published',
+                    now,
+                    now,
+                    current_user["id"]
+                ))
+                
+                template_id = c.lastrowid
+                
+                # Link folder to template
+                c.execute("UPDATE folders SET template_id = ? WHERE id = ?", (template_id, folder_id))
+                conn.commit()
+                
+                logger.info(f"Created assignment template {template_id} for folder {folder_id}")
+                
+                # Create SVN template with marker files
+                svn_created = create_svn_template_with_markers(
+                    svn_path=svn_path,
+                    name=folder.name,
+                    template_files=folder.template_files or {},
+                    marker_file_paths=file_paths,
+                    folder_id=folder_id
+                )
+                
+                if svn_created:
+                    logger.info(f"SVN template created successfully: {svn_path}")
+                    
+                    # Create student submission repositories for enrolled students
+                    from ssh_user_manager import update_user_directories, create_student_submission_repo
+                    
+                    c.execute("""
+                        SELECT DISTINCT u.username
+                        FROM subject_enrollments se
+                        JOIN users u ON se.student_id = u.id
+                        WHERE se.subject_id = ? AND se.semester = ? AND se.year = ? AND se.status = 'active'
+                    """, (subject_id, semester, year))
+                    
+                    enrolled_students = c.fetchall()
+                    assignment_path = f"{year}-{semester}-{subject_code}-Assignment{assignment_number}"
+                    
+                    for (username,) in enrolled_students:
+                        try:
+                            # Update SSH directories
+                            dir_result = update_user_directories(username)
+                            if dir_result.get("success"):
+                                students_updated += 1
+                                logger.info(f"Updated SSH directories for {username}")
+                            
+                            # Create student submission repository
+                            repo_result = create_student_submission_repo(username, assignment_path)
+                            if repo_result["success"]:
+                                logger.info(f"Created submission repo for {username}: {assignment_path}")
+                            else:
+                                logger.warning(f"Failed to create submission repo for {username}: {repo_result.get('error')}")
+                                
+                        except Exception as e:
+                            logger.error(f"Error setting up {username} for assignment: {e}")
+                else:
+                    logger.warning(f"SVN template creation failed for folder {folder_id}")
+                    
+            except Exception as e:
+                logger.error(f"Error creating SVN template for folder {folder_id}: {e}")
+                import traceback
+                traceback.print_exc()
 
         lecturer_files_count = 0
         if lecturer_file_ids_json:
@@ -1206,7 +1328,11 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
             "lecturer_id": current_user["id"],
             "subject_code": folder.subject_code,
             "assigned_students_count": assigned,
-            "lecturer_files_count": lecturer_files_count
+            "lecturer_files_count": lecturer_files_count,
+            "assignment_number": assignment_number,
+            "template_id": template_id,
+            "svn_created": svn_created,
+            "students_updated": students_updated
         }
 
     except sqlite3.Error as e:
@@ -1738,8 +1864,92 @@ async def create_assignment_template(template: AssignmentTemplateCreate, current
     finally:
         conn.close()
 
+def create_svn_template_with_markers(svn_path: str, name: str, template_files: Dict, marker_file_paths: List[str], folder_id: int):
+    """
+    Create SVN template structure with marker files included.
+    Marker files are NOT visible to students - they stay on the server.
+    """
+    import subprocess
+    import tempfile
+    import os
+    
+    logger.info(f"Creating SVN template at {svn_path} with name '{name}' and {len(marker_file_paths)} marker files")
+    
+    try:
+        # Create temporary working directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            work_dir = os.path.join(temp_dir, "svn-work")
+            
+            # Checkout the SVN repository using direct SVN connection to the SVN container
+            checkout_cmd = [
+                "svn", "checkout", "svn://automark-svn/automark", work_dir, "--force",
+                "--username", "admin", "--password", "adminpass123", "--no-auth-cache"
+            ]
+            result = subprocess.run(checkout_cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                logger.error(f"SVN checkout failed: {result.stderr}")
+                return False
+            
+            # Create template directory structure
+            template_dir = os.path.join(work_dir, svn_path)
+            os.makedirs(template_dir, exist_ok=True)
+        
+            # Create default template structure if no template_files provided
+            if not template_files:
+                template_files = create_default_template_structure(name)
+            
+            # Create each template file
+            for file_path, content in template_files.items():
+                full_path = os.path.join(template_dir, file_path)
+                
+                # Create directory if needed
+                dir_path = os.path.dirname(full_path)
+                if dir_path != template_dir:
+                    os.makedirs(dir_path, exist_ok=True)
+                
+                # Create file content
+                with open(full_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                
+                logger.info(f"Created template file: {file_path}")
+            
+            # Add files to SVN
+            svn_add_cmd = [
+                "svn", "add", svn_path, "--force"
+            ]
+            result = subprocess.run(svn_add_cmd, cwd=work_dir, capture_output=True, text=True, timeout=20)
+            
+            if result.returncode != 0:
+                logger.error(f"SVN add failed: {result.stderr}")
+                return False
+            
+            # Commit the template
+            commit_cmd = [
+                "svn", "commit", "-m", f"Create assignment template: {name}",
+                "--username", "admin", "--password", "adminpass123", "--no-auth-cache"
+            ]
+            result = subprocess.run(commit_cmd, cwd=work_dir, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                logger.error(f"SVN commit failed: {result.stderr}")
+                return False
+        
+            logger.info(f"✅ Successfully created SVN template: {svn_path}")
+            logger.info(f"✅ Marker files remain on server at: /app/data/assignments/{folder_id}/marker/")
+            return True
+        
+    except subprocess.TimeoutExpired:
+        logger.error("SVN template creation timed out")
+        return False
+    except Exception as e:
+        logger.error(f"Error creating SVN template: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 def create_svn_template(svn_path: str, name: str, template_files: Dict):
-    """Create SVN template structure by communicating with SVN container"""
+    """Create SVN template structure by communicating with SVN container (legacy function)"""
     import subprocess
     import tempfile
     import shutil
