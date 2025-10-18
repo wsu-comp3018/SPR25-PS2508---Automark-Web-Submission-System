@@ -27,7 +27,7 @@ import zipfile
 import uuid
 
 # Local modules for SVN → sandbox flow (make sure these files exist under app/)
-from . import storage, worker, docker_runner
+from . import storage, worker, docker_runner, file_storage
 
 
 # SSH user management (adjust path if this module lives elsewhere)
@@ -166,8 +166,8 @@ def init_db():
             existing = {row[1] for row in cur.fetchall()}  # row[1] = column name
             to_add = [(name, ddl) for name, ddl in specs.items() if name not in existing]
             for name, ddl in to_add:
-                print(f"   ➕ {table}.{name}  (ALTER TABLE ... ADD COLUMN {ddl})")
-                cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+                print(f"   ➕ {table}.{name}  (ALTER TABLE ... ADD COLUMN {name} {ddl})")
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
             if to_add:
                 conn.commit()
 
@@ -202,12 +202,21 @@ def init_db():
                 name TEXT NOT NULL,
                 type TEXT NOT NULL,
                 size INTEGER NOT NULL,
-                content BLOB NOT NULL,
+                content BLOB,
+                file_path TEXT,
+                checksum TEXT,
                 uploaded_at TEXT NOT NULL,
                 uploaded_by INTEGER NOT NULL,
-                FOREIGN KEY (uploaded_by) REFERENCES users(id)
+                FOREIGN KEY (uploaded_by) REFERENCES users(id),
+                CHECK (content IS NOT NULL OR file_path IS NOT NULL)
             )
         """)
+        
+        # Migrate existing files table if needed
+        ensure_columns("files", {
+            "file_path": "TEXT",
+            "checksum": "TEXT"
+        })
         
         print("👨‍🎓 INIT_DB: Creating hardcoded students...")
         now = now_iso()
@@ -1132,11 +1141,19 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
         folder_id = c.lastrowid
 
         lecturer_file_ids_json = None
+        file_paths = []
+        
         # Store lecturer files if provided
         if folder.files:
             file_ids = _insert_lecturer_files(c, current_user["id"], folder.files)
             lecturer_file_ids_json = json.dumps(file_ids)
             c.execute("UPDATE folders SET lecturer_file_ids = ? WHERE id = ?", (lecturer_file_ids_json, folder_id))
+            
+            # Get file paths for copying to marker directory
+            if file_ids:
+                placeholders = ",".join(["?"] * len(file_ids))
+                c.execute(f"SELECT file_path FROM files WHERE id IN ({placeholders})", file_ids)
+                file_paths = [row[0] for row in c.fetchall() if row[0]]
 
         # Auto-assign actively enrolled students (unchanged)
         assigned = 0
@@ -1161,6 +1178,14 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
             logger.warning(f"Auto-assign students failed for folder {folder_id}: {e}")
 
         conn.commit()
+        
+        # CRITICAL: Copy marker files to assignment directory after commit
+        if file_paths:
+            try:
+                marker_dir = file_storage.copy_marker_files_to_assignment(file_paths, folder_id)
+                logger.info(f"Marker files copied to: {marker_dir}")
+            except Exception as e:
+                logger.error(f"Failed to copy marker files for folder {folder_id}: {e}")
 
         lecturer_files_count = 0
         if lecturer_file_ids_json:
@@ -1247,14 +1272,33 @@ def update_folder(folder_id: int, payload: FolderUpdate, current_user: dict = De
             remove_set = set(int(x) for x in payload.remove_file_ids)
             to_delete = [fid for fid in existing_file_ids if fid in remove_set]
             if to_delete:
-                existing_file_ids = [fid for fid in existing_file_ids if fid not in remove_set]
+                # Get file paths before deletion for cleanup
                 placeholders = ",".join(["?"] * len(to_delete))
+                c.execute(f"SELECT file_path FROM files WHERE id IN ({placeholders})", to_delete)
+                file_paths_to_delete = [row[0] for row in c.fetchall() if row[0]]
+                
+                # Delete from database
+                existing_file_ids = [fid for fid in existing_file_ids if fid not in remove_set]
                 c.execute(f"DELETE FROM files WHERE id IN ({placeholders})", to_delete)
+                
+                # Delete from filesystem
+                for file_path in file_paths_to_delete:
+                    try:
+                        file_storage.delete_file(file_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete file {file_path}: {e}")
 
         # Append new lecturer files if provided
+        new_file_paths = []
         if payload.files:
             new_ids = _insert_lecturer_files(c, current_user["id"], payload.files)
             existing_file_ids.extend(new_ids)
+            
+            # Get file paths for the new files
+            if new_ids:
+                placeholders = ",".join(["?"] * len(new_ids))
+                c.execute(f"SELECT file_path FROM files WHERE id IN ({placeholders})", new_ids)
+                new_file_paths = [row[0] for row in c.fetchall() if row[0]]
 
         # Persist updated lecturer_file_ids if changed
         c.execute("UPDATE folders SET lecturer_file_ids = ? WHERE id = ?",
@@ -1296,6 +1340,14 @@ def update_folder(folder_id: int, payload: FolderUpdate, current_user: dict = De
                 """, (folder_id, sid, now_iso()))
 
         conn.commit()
+        
+        # Copy new marker files to assignment directory after commit
+        if new_file_paths:
+            try:
+                marker_dir = file_storage.copy_marker_files_to_assignment(new_file_paths, folder_id)
+                logger.info(f"Updated marker files copied to: {marker_dir}")
+            except Exception as e:
+                logger.error(f"Failed to copy updated marker files for folder {folder_id}: {e}")
 
         c.execute("""
             SELECT id, name, description, due_date, max_points, status,
@@ -2440,39 +2492,44 @@ def _ensure_lecturer_files_column():
 # --- NEW: lecturer file insertion helper (used by create/update folder) ---
 def _insert_lecturer_files(c: sqlite3.Cursor, uploader_id: int, files: List[FileCreate]) -> List[int]:
     """
-    Persist lecturer-only files (e.g., marker scripts) into files table.
+    Save lecturer files to filesystem and store metadata in database.
     Returns list of inserted file IDs.
     """
     inserted: List[int] = []
     if not files:
         return inserted
+    
     now = now_iso()
     for f in files:
         try:
-            content_b64 = f.content
-            # Accept data URLs
-            if "," in content_b64:
-                content_b64 = content_b64.split(",", 1)[1]
-            blob = base64.b64decode(content_b64)
+            # Save file to filesystem
+            file_info = file_storage.save_file_to_disk(
+                name=f.name,
+                content_b64=f.content,
+                file_type=f.type or "application/octet-stream",
+                subdir="markers"
+            )
+            
+            # Store metadata in database
+            c.execute("""
+                INSERT INTO files (name, type, size, file_path, checksum, uploaded_at, uploaded_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                file_info["name"],
+                file_info["type"],
+                file_info["size"],
+                file_info["file_path"],
+                file_info["checksum"],
+                now,
+                uploader_id
+            ))
+            inserted.append(c.lastrowid)
+            logger.info(f"Saved lecturer file: {f.name} (ID: {c.lastrowid}, Path: {file_info['file_path']})")
+            
         except Exception as e:
-            logger.warning(f"Skipping file '{getattr(f,'name', '?')}' (decode error): {e}")
+            logger.warning(f"Skipping file '{getattr(f,'name', '?')}': {e}")
             continue
-        size = f.size or len(blob)
-        if size != len(blob):
-            # Trust actual decoded length
-            size = len(blob)
-        c.execute("""
-            INSERT INTO files (name, type, size, content, uploaded_at, uploaded_by)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            f.name,
-            f.type or "application/octet-stream",
-            size,
-            sqlite3.Binary(blob),
-            now,
-            uploader_id
-        ))
-        inserted.append(c.lastrowid)
+    
     return inserted
 
 # Historic Directory Endpoints
