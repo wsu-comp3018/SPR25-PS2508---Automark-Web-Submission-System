@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # FastAPI Backend Server
   automark-api:
     build:
       context: ./Backend/server
@@ -13,27 +12,36 @@ services:
       - DB_PATH=/app/data/automark.db
       - UPLOAD_DIR=/app/uploads
       - PYTHONPATH=/app
+      - JOB_IMAGE=automark-job:latest
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    # Start FastAPI (comment this out if your Dockerfile already sets CMD)
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 
     volumes:
-      # Persist database and uploads
+      # Persist DB and uploads
       - automark-data:/app/data
       - automark-uploads:/app/uploads
-      # Mount source code for development (hot reload)
+      # Mount full backend server (contains /app/main.py under ./Backend/server/app/)
       - ./Backend/server:/app
-      # Mount Docker socket for SSH user management
+      # Docker socket for SSH user mgmt / job runner
       - /var/run/docker.sock:/var/run/docker.sock
-      # Shared access to SSH submissions (READ/WRITE)
+      # Shared areas used by the app
       - automark-submissions:/app/shared/submissions
+      - automark-assignments:/app/data/assignments
+      - automark-results:/app/data/results
     networks:
       - automark-network
     depends_on:
       - automark-ssh
+      # include svn if you have the service defined
+      - automark-svn
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+
 
   # SSH Server for Assignment Submissions
   automark-ssh:
@@ -69,8 +77,14 @@ services:
     volumes:
       # SVN repositories
       - automark-svn-repos:/var/svn
+      # SVN configuration (for persistent user authentication)
+      - automark-svn-config:/etc/subversion
       # Shared access to collect submissions
       - automark-submissions:/var/submissions
+      # Database access for post-commit hook
+      - automark-data:/app/data
+      # Live hook file for development/prototype (always up-to-date)
+      - ./SVN/post-commit-hook.py:/var/svn/hooks/post-commit-live.py:ro
     networks:
       - automark-network
     restart: unless-stopped
@@ -103,16 +117,35 @@ services:
       timeout: 10s
       retries: 3
 
+  # Sandbox container for running marker scripts
+  automark-sandbox:
+    build:
+      context: ./Backend/sandbox
+      dockerfile: Dockerfile
+    image: automark-job:latest
+    container_name: automark-sandbox
+    # This service doesn't run continuously, it's used by the API for job execution
+    command: ["tail", "-f", "/dev/null"]
+    networks:
+      - automark-network
+    restart: "no"
+
 volumes:
-  # Persistent storage for database and files
   automark-data:
-    driver: local
+    name: automark-data
   automark-uploads:
-    driver: local
+    name: automark-uploads
   automark-submissions:
-    driver: local
+    name: automark-submissions
   automark-svn-repos:
-    driver: local
+    name: automark-svn-repos
+  automark-svn-config:
+    name: automark-svn-config
+  automark-assignments:
+    name: automark-assignments
+  automark-results:
+    name: automark-results
+
 
 networks:
   automark-network:

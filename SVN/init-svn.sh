@@ -81,6 +81,24 @@ EOF
     echo "✅ Initial repository structure created"
 fi
 
+# Install post-commit hook (prefer live version if available)
+echo "🔗 Installing SVN post-commit hook..."
+if [ -f "/var/svn/hooks/post-commit-live.py" ]; then
+    # Use the live version (volume-mounted)
+    cp /var/svn/hooks/post-commit-live.py /var/svn/repositories/automark/hooks/post-commit
+    chmod +x /var/svn/repositories/automark/hooks/post-commit
+    chown www-data:www-data /var/svn/repositories/automark/hooks/post-commit
+    echo "✅ Post-commit hook installed from live version"
+elif [ -f "/var/svn/hooks/post-commit-hook.py" ]; then
+    # Use the built-in version
+    cp /var/svn/hooks/post-commit-hook.py /var/svn/repositories/automark/hooks/post-commit
+    chmod +x /var/svn/repositories/automark/hooks/post-commit
+    chown www-data:www-data /var/svn/repositories/automark/hooks/post-commit
+    echo "✅ Post-commit hook installed from built-in version"
+else
+    echo "⚠️  Warning: No post-commit hook found"
+fi
+
 echo "🔧 Setting up SVN server configuration..."
 
 # Start SVN server

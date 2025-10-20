@@ -9,6 +9,7 @@ SSH User Management (Docker SDK)
 
 import os
 import logging
+import subprocess
 from typing import Dict, Any
 
 try:
@@ -76,49 +77,22 @@ class SSHUserManager:
                 result["error"] = f"Failed to set password: {out}"
                 return result
 
-            # create simple assignment folders and set perms
-            code, out = self._exec_sh(
-                f"""
-                set -e
-                mkdir -p "/home/{username}/2025/AUT/PX/Assignment1" \
-                         "/home/{username}/2025/AUT/PX/Assignment2" \
-                         "/home/{username}/2025/SPR/PX/Assignment1" \
-                         "/home/{username}/2025/SPR/PX/Assignment2"
-                chown -R "{username}:{username}" "/home/{username}/2025"
-                chmod 755 "/home/{username}/2025"
-                chmod -R 755 "/home/{username}/2025"
-                chmod 775 "/home/{username}/2025/AUT/PX/Assignment1" "/home/{username}/2025/AUT/PX/Assignment2" \
-                          "/home/{username}/2025/SPR/PX/Assignment1" "/home/{username}/2025/SPR/PX/Assignment2"
-                echo 'echo "Welcome to Automark, {username}! Your assignment folders are in ~/2025/"' >> "/home/{username}/.bashrc"
-
             # Create base directory structure (assignments will be created based on enrollments)
-            success, stdout, stderr = self._exec_in_container([
-                "bash", "-c", f"""
+            code, out = self._exec_sh(f"""
                 # Create base year directory structure
-                mkdir -p "/home/{username}/2025/AUT" \\
-                         "/home/{username}/2025/SPR"
+                mkdir -p "/home/{username}/2025/AUT" "/home/{username}/2025/SPR"
                 
                 # Set proper ownership and permissions
                 chown -R "{username}:{username}" "/home/{username}/2025"
                 chmod 755 "/home/{username}/2025"
                 chmod -R 755 "/home/{username}/2025"
-                """
-            ])
-            
-            if not success:
-                result["error"] = f"Failed to create chroot directories: {stderr}"
-                return result
-            
-            # Create enrollment-based directories and welcome message
-            success, stdout, stderr = self._exec_in_container([
-                "bash", "-c", f"""
+                
                 # Create a welcome message with enrollment instructions
                 echo 'echo "Welcome to Automark, {username}!"' >> "/home/{username}/.bashrc"
                 echo 'echo "Your assignment folders are in ~/2025/"' >> "/home/{username}/.bashrc"
                 echo 'echo "Use the web interface to enroll in subjects and get assignments."' >> "/home/{username}/.bashrc"
                 chown "{username}:{username}" "/home/{username}/.bashrc"
-                """
-            )
+            """)
             if code != 0:
                 result["error"] = f"Failed to set up user environment: {out}"
                 return result
@@ -151,77 +125,55 @@ class SSHUserManager:
         }
         
         try:
+            import docker
+            
+            # Connect to Docker daemon
+            client = docker.from_env()
+            
+            # Get the SVN container
+            svn_container = client.containers.get("automark-svn")
+            
             # Check if user already exists in SVN passwd file
-            check_cmd = ["docker", "exec", "automark-svn", "grep", f"^{username} =", "/etc/subversion/passwd"]
-            check_result = subprocess.run(check_cmd, capture_output=True, text=True)
+            check_result = svn_container.exec_run(f"grep '^{username} =' /etc/subversion/passwd")
+            user_exists = check_result.exit_code == 0
             
-            if check_result.returncode == 0:
-                result["success"] = True
-                result["message"] = f"User {username} already exists in SVN authentication"
-                return result
-            
-            # Add user to SVN passwd file
-            add_cmd = [
-                "docker", "exec", "automark-svn",
-                "bash", "-c", f"echo '{username} = {password}' >> /etc/subversion/passwd"
-            ]
-            add_result = subprocess.run(add_cmd, capture_output=True, text=True, timeout=10)
-            
-            if add_result.returncode != 0:
-                result["error"] = f"Failed to add user to SVN passwd: {add_result.stderr}"
-                return result
+            # Add user to SVN passwd file only if they don't exist
+            if not user_exists:
+                add_passwd_result = svn_container.exec_run(f"bash -c 'echo \"{username} = {password}\" >> /etc/subversion/passwd'")
+                if add_passwd_result.exit_code != 0:
+                    result["error"] = f"Failed to add user to SVN passwd: {add_passwd_result.output.decode()}"
+                    return result
             
             # Add user to students group in authz file
-            authz_cmd = [
-                "docker", "exec", "automark-svn",
-                "bash", "-c", f"""
-                # Check if students group is empty and add user appropriately
-                if grep -q '^students = $' /etc/subversion/authz; then
-                    # Students group is empty, add first user
-                    sed -i 's/^students = $/students = {username}/' /etc/subversion/authz
-                else
-                    # Add to existing students group
-                    sed -i 's/^students = .*/&,{username}/' /etc/subversion/authz
+            # First check if students group is empty
+            check_empty = svn_container.exec_run("grep '^students = $' /etc/subversion/authz")
+            if check_empty.exit_code == 0:
+                # Students group is empty, add first user
+                authz_result = svn_container.exec_run(f"sed -i 's/^students = $/students = {username}/' /etc/subversion/authz")
+            else:
+                # Check if user is already in students group
+                check_user = svn_container.exec_run(f"grep '{username}' /etc/subversion/authz")
+                if check_user.exit_code != 0:
+                    # User not in group, add them
+                    authz_result = svn_container.exec_run(f"sed -i 's/^students = .*/&,{username}/' /etc/subversion/authz")
                     # Clean up any double commas
-                    sed -i 's/,,/,/g' /etc/subversion/authz
-                fi
-                """
-            ]
-            authz_result = subprocess.run(authz_cmd, capture_output=True, text=True, timeout=10)
-            
-            if authz_result.returncode != 0:
-                logger.warning(f"Failed to update authz file for {username}: {authz_result.stderr}")
+                    svn_container.exec_run("sed -i 's/,,/,/g' /etc/subversion/authz")
+                else:
+                    # User already in group, no action needed
+                    authz_result = type('obj', (object,), {'exit_code': 0})()
+            if authz_result.exit_code != 0:
+                logger.warning(f"Failed to update authz file for {username}: {authz_result.output.decode()}")
             
             result["success"] = True
             result["message"] = f"Added {username} to SVN authentication"
             logger.info(f"Added {username} to SVN authentication system")
             
-        except subprocess.TimeoutExpired:
-            result["error"] = "SVN authentication update timed out"
         except Exception as e:
             result["error"] = f"Error updating SVN authentication: {str(e)}"
             logger.error(f"Error adding {username} to SVN auth: {e}")
         
         return result
     
-    def delete_user(self, username: str) -> Dict[str, Any]:
-        """
-        Delete an SSH user from the container
-        Returns dict with success status and details
-        """
-        result = {
-            "success": False,
-            "username": username,
-            "message": "",
-            "error": None
-        }
-        
-        # Check if user exists
-        if not self.user_exists(username):
-            result["message"] = f"User '{username}' does not exist"
-            result["success"] = True  # Not an error, user doesn't exist
-            return result
-
     def delete_user(self, username: str) -> Dict[str, Any]:
         result = {"success": False, "username": username, "message": "", "error": None}
         try:
@@ -275,9 +227,14 @@ def add_existing_user_to_svn(username: str, password: str) -> Dict[str, Any]:
 
 def create_student_submission_repo(username: str, assignment_path: str) -> Dict[str, Any]:
     """
-    Create a student submission repository for an assignment
+    Create a student submission repository for an assignment by copying from template
     assignment_path example: "2025-AUT-Comp0067-Assignment1"
+    
+    This uses 'svn copy' to preserve ancestry, eliminating switch issues
     """
+    import tempfile
+    import os
+    
     result = {
         "success": False,
         "message": "",
@@ -285,38 +242,58 @@ def create_student_submission_repo(username: str, assignment_path: str) -> Dict[
     }
     
     try:
+        template_path = f"templates/{assignment_path}"
         student_repo_path = f"student-repos/{assignment_path}/{username}"
         
-        # Create student submission directory in SVN
-        cmd = [
-            "docker", "exec", "automark-svn",
-            "bash", "-c", f"""
-            # Check out the main repository
-            svn checkout file:///var/svn/repositories/automark /tmp/svn-student-setup --force
+        # Create temporary working directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            work_dir = os.path.join(temp_dir, "svn-setup")
             
-            # Create student directory structure
-            mkdir -p "/tmp/svn-student-setup/{student_repo_path}"
+            # First, create parent directory structure if it doesn't exist
+            checkout_cmd = [
+                "svn", "checkout", "svn://automark-svn/automark", work_dir, "--force",
+                "--username", "admin", "--password", "adminpass123", "--no-auth-cache"
+            ]
+            checkout_result = subprocess.run(checkout_cmd, capture_output=True, text=True, timeout=30)
             
-            # Add to SVN
-            cd /tmp/svn-student-setup
-            svn add "{student_repo_path}" --parents
+            if checkout_result.returncode != 0:
+                result["error"] = f"Failed to checkout repository: {checkout_result.stderr}"
+                return result
             
-            # Commit the new student repository
-            svn commit -m "Create submission repository for {username} - {assignment_path}" --username admin --password adminpass123 --no-auth-cache
+            # Create parent directories
+            parent_dir = os.path.join(work_dir, "student-repos", assignment_path)
+            os.makedirs(parent_dir, exist_ok=True)
             
-            # Clean up
-            rm -rf /tmp/svn-student-setup
-            """
-        ]
-        
-        cmd_result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            # Add parent directory to SVN
+            add_cmd = [
+                "svn", "add", f"student-repos/{assignment_path}", "--parents", "--force"
+            ]
+            add_result = subprocess.run(add_cmd, cwd=work_dir, capture_output=True, text=True, timeout=20)
+            
+            # Commit parent directory (ignore if already exists)
+            if add_result.returncode == 0:
+                commit_cmd = [
+                    "svn", "commit", "-m", f"Create parent directory for {assignment_path}",
+                    "--username", "admin", "--password", "adminpass123", "--no-auth-cache"
+                ]
+                subprocess.run(commit_cmd, cwd=work_dir, capture_output=True, text=True, timeout=20)
+            
+            # Now use svn copy to create student repo from template (preserves ancestry!)
+            copy_cmd = [
+                "svn", "copy", f"svn://automark-svn/automark/{template_path}",
+                f"svn://automark-svn/automark/{student_repo_path}",
+                "-m", f"Create submission repository for {username} from {assignment_path} template",
+                "--username", "admin", "--password", "adminpass123", "--no-auth-cache"
+            ]
+            
+            cmd_result = subprocess.run(copy_cmd, capture_output=True, text=True, timeout=30)
         
         if cmd_result.returncode != 0:
             result["error"] = f"Failed to create student repository: {cmd_result.stderr}"
             return result
         
         result["success"] = True
-        result["message"] = f"Created submission repository: {student_repo_path}"
+        result["message"] = f"Created submission repository from template: {student_repo_path}"
         result["repo_path"] = student_repo_path
         
     except subprocess.TimeoutExpired:
@@ -396,17 +373,15 @@ def update_user_directories(username: str) -> Dict[str, Any]:
             if not assignment_templates:
                 logger.info(f"No assignment templates found for {subject_code} {semester} {year} - creating base subject directory only")
                 # Create just the subject directory if no assignments exist yet
-                success, stdout, stderr = manager._exec_in_container([
-                    "bash", "-c", f"""
+                code, out = manager._exec_sh(f"""
                     if [ ! -d "{subject_path}" ]; then
                         mkdir -p "{subject_path}"
                         chown "{username}:{username}" "{subject_path}"
                         chmod 755 "{subject_path}"
                         echo "Created base directory: {subject_path}"
                     fi
-                    """
-                ])
-                if success:
+                """)
+                if code == 0:
                     directories_created.append(subject_path)
                 continue
             
@@ -414,8 +389,7 @@ def update_user_directories(username: str) -> Dict[str, Any]:
             for assignment_number, assignment_name, status in assignment_templates:
                 assignment_path = f"{subject_path}/Assignment{assignment_number}"
                 
-                success, stdout, stderr = manager._exec_in_container([
-                    "bash", "-c", f"""
+                code, out = manager._exec_sh(f"""
                     # Create assignment directory if it doesn't exist
                     if [ ! -d "{assignment_path}" ]; then
                         mkdir -p "{assignment_path}"
@@ -425,18 +399,16 @@ def update_user_directories(username: str) -> Dict[str, Any]:
                     else
                         echo "Exists: {assignment_path} ({assignment_name})"
                     fi
-                    """
-                ])
+                """)
                 
-                if success:
+                if code == 0:
                     directories_created.append(assignment_path)
                 else:
-                    logger.warning(f"Failed to create directory {assignment_path}: {stderr}")
+                    logger.warning(f"Failed to create directory {assignment_path}: {out}")
         
         # Update welcome message with available subjects and ensure ALL permissions are correct
         subject_list = ", ".join([f"{sem}/{code}" for sem, year, code in enrollments])
-        success, stdout, stderr = manager._exec_in_container([
-            "bash", "-c", f"""
+        code, out = manager._exec_sh(f"""
             # Update .bashrc with current enrollments
             grep -v "enrolled subjects" "/home/{username}/.bashrc" > "/tmp/{username}_bashrc" 2>/dev/null || true
             mv "/tmp/{username}_bashrc" "/home/{username}/.bashrc" 2>/dev/null || true
@@ -454,8 +426,7 @@ def update_user_directories(username: str) -> Dict[str, Any]:
             
             # Make .bashrc executable
             chmod 644 "/home/{username}/.bashrc"
-            """
-        ])
+        """)
         
         result["success"] = True
         result["message"] = f"Updated directories for {len(directories_created)} assignments across {len(enrollments)} subjects"

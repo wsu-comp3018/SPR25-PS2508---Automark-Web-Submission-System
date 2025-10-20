@@ -1,25 +1,7 @@
 /********************
- * Storage Contracts *
- ********************/
-const STORAGE_FOLDERS = 'automark_folders';
-const STORAGE_SUBS = 'automark_submissions';
-const USERS_KEY = 'automark_users';
-const SESSION_KEY = 'automark-session';
-const FILES_KEY = 'automark_files';
-
-/********************
  * Utilities         *
  ********************/
 const $ = (id) => document.getElementById(id);
-const loadJSON = (key, fallback = []) => {
-  try {
-    return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
-  } catch (e) {
-    return fallback;
-  }
-};
-const saveJSON = (key, obj) => localStorage.setItem(key, JSON.stringify(obj));
-const uid = (p = 'id') => p + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 
 function fmtDate(iso) {
   try {
@@ -52,125 +34,53 @@ function showNote(msg, type = 'success') {
 /********************
  * Session Guard     *
  ********************/
-const sessionData = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
-const currentUser = sessionData?.user || null;
+// const API_BASE = 'http://localhost:8000/api/v1';
+const API_BASE = '/api/v1';
 
-// Check if user is logged in and is a student
-if (!currentUser || currentUser.role !== 'student') {
-  alert('Not signed in as student. Redirecting to login.');
-  window.location.href = 'login&register.html';
+function getTokenFromURL() {
+  try {
+    const u = new URL(window.location.href);
+    return u.searchParams.get('token');
+  } catch {
+    return null;
+  }
 }
 
-// Set greeting if element exists
-if ($('greeting')) {
-  $('greeting').textContent = `Hi, ${currentUser.firstName || currentUser.username || 'Student'}`;
-}
+// Also allow reading token from localStorage (same key as lecturer dashboard)
+const TOKEN_KEY = 'automark_token';
+
+let token = null;
+let currentUser = null;
 
 /********************
  * File Helpers      *
  ********************/
 const selectedFiles = new Map(); // Store selected files temporarily
 
-function saveFiles(files) {
+// Convert File objects to base64 payloads (no local storage)
+function readFilesAsPayloads(files) {
   return new Promise((resolve) => {
-    const fileIds = [];
     if (!files || files.length === 0) return resolve([]);
-    let processed = 0;
-    Array.from(files).forEach(f => {
+    const out = [];
+    let done = 0;
+    Array.from(files).forEach((f) => {
       const reader = new FileReader();
-      reader.onload = e => {
-        const data = {
-          id: uid('file'),
+      reader.onload = (e) => {
+        const dataUrl = String(e.target.result || '');
+        const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+        out.push({
           name: f.name,
-          type: f.type,
+          type: f.type || 'application/octet-stream',
           size: f.size,
-          lastModified: f.lastModified,
-          content: String(e.target.result).split(',')[1]
-        };
-        const all = loadJSON(FILES_KEY, []);
-        all.push(data);
-        saveJSON(FILES_KEY, all);
-        fileIds.push(data.id);
-        processed++;
-        if (processed === files.length) resolve(fileIds);
+          content: base64
+        });
+        if (++done === files.length) resolve(out);
       };
       reader.readAsDataURL(f);
     });
   });
 }
 
-function getFile(fileId) {
-  return loadJSON(FILES_KEY, []).find(f => f.id === fileId);
-}
-
-function downloadFile(fileId, fileName) {
-  const f = getFile(fileId);
-  if (!f) return;
-  const a = document.createElement('a');
-  a.href = `data:${f.type};base64,${f.content}`;
-  a.download = fileName || f.name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
-
-function formatFileSize(bytes) {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}
-
-/********************
- * Data Access       *
- ********************/
-const expanded = new Set();
-const allUsers = loadJSON(USERS_KEY, []);
-const getFolders = () => loadJSON(STORAGE_FOLDERS, []);
-const getSubs = () => loadJSON(STORAGE_SUBS, []);
-const saveSubs = (s) => saveJSON(STORAGE_SUBS, s);
-
-function isAssignedToMe(folder) {
-  return Array.isArray(folder.assignedTo) && folder.assignedTo.map(String).includes(String(currentUser.id));
-}
-function isActive(folder) {
-  return (folder.status || 'draft') === 'active';
-}
-
-function findById(list, id) {
-  for (const f of list) {
-    if (f.id === id) return f;
-    if (f.subfolders?.length) {
-      const x = findById(f.subfolders, id);
-      if (x) return x;
-    }
-  }
-
-  return null;
-}
-
-/** Returns all nodes (folders and subfolders) visible to the current student.
- *  A node is visible if: node.status==='active' AND (node.assignedTo includes me).
- *  Parent nodes that are not assigned but have visible children are also shown as context, but are not actionable.
- */
-function computeVisibleTree() {
-  const roots = getFolders();
-  function walk(node) {
-    const children = (node.subfolders || []).map(walk).filter(Boolean);
-    const meAssigned = isAssignedToMe(node) && isActive(node);
-    const hasVisibleChild = children.length > 0;
-    if (meAssigned || hasVisibleChild) {
-      return { ...node, subfolders: children, __meAssigned: meAssigned };
-    }
-    return null;
-  }
-  return roots.map(walk).filter(Boolean);
-}
-
-/********************
- * File UI Management *
- ********************/
 function updateFileList(folderId) {
   const container = document.querySelector(`[data-file-list="${folderId}"]`);
   if (!container) return;
@@ -201,64 +111,207 @@ function removeFile(folderId, index) {
   }
   updateFileList(folderId);
 }
+window.removeFile = removeFile; // expose for inline onclick
 
 function addFiles(folderId, newFiles) {
   if (!newFiles || newFiles.length === 0) return;
-
   const existingFiles = selectedFiles.get(folderId) || [];
   const allFiles = [...existingFiles];
-
   Array.from(newFiles).forEach(file => {
-    // Check for duplicate names
     if (!allFiles.some(existing => existing.name === file.name)) {
       allFiles.push(file);
     }
   });
-
   selectedFiles.set(folderId, allFiles);
   updateFileList(folderId);
+}
+
+// Download file via backend
+async function fetchFile(fileId) {
+  const res = await fetch(`${API_BASE}/files/${fileId}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok) throw new Error('File not found');
+  return res.json();
+}
+
+async function downloadFile(fileId, fileName) {
+  try {
+    const f = await fetchFile(fileId);
+    const a = document.createElement('a');
+    a.href = `data:${f.type};base64,${f.content}`;
+    a.download = fileName || f.name || `file_${fileId}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch {
+    showNote('Failed to download file', 'error');
+  }
+}
+window.downloadFile = downloadFile;
+
+/********************
+ * Data Access       *
+ ********************/
+const expanded = new Set();
+let __apiTree = [];
+const getFolders = () => __apiTree;
+
+function isActive(folder) {
+  const st = (folder.status || '').toLowerCase();
+  return st === 'published' || st === 'active';
+}
+
+async function fetchCurrentUser() {
+  const res = await fetch(`${API_BASE}/auth/session/${token}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok) throw new Error('Invalid session');
+  const data = await res.json();
+  if (!data.valid) throw new Error('Invalid session');
+  return data.user;
+}
+
+// Fetch assigned folders for the logged-in student
+async function fetchAssignedFolders() {
+  try {
+    const res = await fetch(`${API_BASE}/student/folders`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+// Fetch subjects assigned to the logged-in student
+async function fetchStudentSubjects() {
+  try {
+    const res = await fetch(`${API_BASE}/student/subjects`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+// Fetch my submissions from backend
+async function fetchMySubmissions() {
+  try {
+    const res = await fetch(`${API_BASE}/student/submissions`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+function findById(list, id) {
+  for (const f of list) {
+    if (String(f.id) === String(id)) return f;
+    if (f.subfolders?.length) {
+      const x = findById(f.subfolders, id);
+      if (x) return x;
+    }
+  }
+  return null;
+}
+
+/** Build a Subject -> Assignments tree (subjects are collapsible, assignments are leaf nodes). */
+function buildSubjectAssignmentTree(subjects, folders) {
+  const grouped = new Map();
+  (folders || []).forEach(f => {
+    const code = f.subject_code;
+    if (!grouped.has(code)) grouped.set(code, []);
+    grouped.get(code).push(f);
+  });
+  if (!subjects || subjects.length === 0) {
+    subjects = Array.from(grouped.keys()).map(code => ({ code, name: code, id: code }));
+  }
+  return (subjects || []).map(s => {
+    const children = (grouped.get(s.code) || []).map(f => ({
+      id: String(f.id),
+      name: f.name,
+      description: f.description || '',
+      dueDate: f.due_date || null,
+      maxPoints: f.max_points || null,
+      status: f.status || 'draft',
+      fileIds: [], // lecturer materials not modeled server-side yet
+      subfolders: [],
+      __meAssigned: true
+    }));
+    return {
+      id: `sub_${s.code}`,
+      name: `${s.code} - ${s.name}`,
+      description: '',
+      dueDate: null,
+      maxPoints: null,
+      status: 'subject',
+      fileIds: [],
+      subfolders: children,
+      __meAssigned: false,
+      isSubject: true
+    };
+  });
 }
 
 /********************
  * Rendering         *
  ********************/
-function render() {
-  const tree = computeVisibleTree();
+async function render() {
+  const [subjects, apiFolders, mySubs] = await Promise.all([
+    fetchStudentSubjects(),
+    fetchAssignedFolders(),
+    fetchMySubmissions()
+  ]);
+  const tree = buildSubjectAssignmentTree(subjects, apiFolders);
+  __apiTree = tree;
+
   const query = ($('searchBox')?.value || '').toLowerCase();
   const main = $('mainList');
   if (!main) return;
   main.innerHTML = '';
 
-  const side = $('sidebarList');
-  if (side) side.innerHTML = '';
-
+  // Auto-expand subjects on first render
+  if (expanded.size === 0) {
+    tree.forEach(n => {
+      if (n.isSubject && n.subfolders && n.subfolders.length) expanded.add(n.id);
+    });
+  }
 
   if (tree.length === 0) {
     main.innerHTML = '<div class="small">No active assignments yet. If you were recently enrolled, your lecturer may still be preparing them.</div>';
   }
 
   let activeCount = 0, submittedCount = 0, dueSoon = 0, graded = 0;
-  const mySubs = getSubs().filter(s => s.studentId === String(currentUser.id));
 
   function renderNode(container, node, level = 0, parentPath = '') {
     const path = parentPath ? parentPath + ' / ' + node.name : node.name;
     const matches = !query || path.toLowerCase().includes(query) || (node.description || '').toLowerCase().includes(query);
-    if (!matches) return; // filter
+    if (!matches) return;
 
     const hasChildren = (node.subfolders || []).length > 0;
     const open = expanded.has(node.id);
     const icon = hasChildren ? (open ? '📂' : '📁') : '📄';
 
-    // Stats counters
-    if (node.__meAssigned) {
+    // Count only assignment (leaf) nodes
+    let existing = null;
+    if (!node.isSubject && node.__meAssigned) {
       activeCount++;
       if (daysUntil(node.dueDate) <= 7) dueSoon++;
-      const sub = mySubs.find(s => s.folderId === node.id);
-      if (sub) {
+      existing = mySubs.find(s => String(s.folder_id) === String(node.id));
+      if (existing) {
         submittedCount++;
-        if (sub.graded) graded++;
+        if (existing.status === 'graded' || existing.score != null) graded++;
       }
-
     }
 
     const wrapper = document.createElement('div');
@@ -267,7 +320,39 @@ function render() {
 
     const due = node.dueDate ? `Due: ${fmtDateShort(node.dueDate)}` : 'No due date';
     const points = node.maxPoints ? `${node.maxPoints} pts` : '—';
-    const mat = Array.isArray(node.fileIds) && node.fileIds.length > 0 ? `${node.fileIds.length} file(s)` : 'No materials';
+    const mat = node.fileIds?.length ? `${node.fileIds.length} file(s)` : 'No materials';
+
+    const metaHtml = node.isSubject
+      ? `<div class="meta"><span class="status subject">Subject</span> • Expand to see assignments</div>`
+      : `<div class="meta">
+           <span class="status ${isActive(node) ? 'active' : 'draft'}">${isActive(node) ? 'Active' : 'Draft'}</span>
+           ${node.__meAssigned ? '<span class="badge">Assigned to you</span>' : ''}
+           • ${due} • ${points} • Materials: ${mat}
+         </div>`;
+
+    const descHtml = (!node.isSubject && node.description)
+      ? `<div class="small" style="margin-top:4px">${node.description}</div>` : '';
+
+    // Existing submission details (files without content)
+    const submittedFilesHtml = existing?.files?.length ? `
+      <div class="submitted-files">
+        <div class="small" style="font-weight: 500; margin-bottom: 4px;">📎 Submitted Files:</div>
+        ${existing.files.map(f => `
+          <div class="submitted-file">
+            <span class="name">${f.name}</span>
+            <span class="download" onclick="downloadFile('${f.id}', '${f.name}')">Download</span>
+          </div>
+        `).join('')}
+      </div>
+    ` : '';
+
+    const submitHtml = node.isSubject
+      ? `<div class="small" style="margin-top:6px;color:#999">Open this subject to view its assignments.</div>`
+      : (node.__meAssigned
+          ? (hasChildren
+              ? '<div class="small" style="margin-top:6px;color:#999">Submissions are only allowed in the <strong>last child folder</strong>. Open a child folder to submit.</div>'
+              : renderInlineSubmission(node, existing))
+          : '<div class="small" style="margin-top:6px;color:#999">Visible for context (not assigned to you).</div>');
 
     wrapper.innerHTML = `
       <div class="left">
@@ -275,16 +360,10 @@ function render() {
           <span style="font-size:12px">${icon}</span>
           <span class="name">${node.name}</span>
         </div>
-        <div class="meta">
-          <span class="status ${isActive(node) ? 'active' : 'draft'}">${isActive(node) ? 'Active' : 'Draft'}</span>
-          ${node.__meAssigned ? '<span class="badge">Assigned to you</span>' : ''}
-          • ${due} • ${points} • Materials: ${mat}
-        </div>
-        ${node.description ? `<div class="small" style="margin-top:4px">${node.description}</div>` : ''}
- 
-        ${node.fileIds?.length ? `<div class="small" style="margin-top:6px">` + node.fileIds.map(fid => `<a href="#" class="link" data-download-mat="${fid}" title="Download material">${(getFile(fid) || {}).name || 'file'}</a>`).join(' • ') + `</div>` : ''}
- 
-        ${node.__meAssigned ? (hasChildren ? '<div class="small" style="margin-top:6px;color:#999">Submissions are only allowed in the <strong>last child folder</strong>. Open a child folder to submit.</div>' : renderInlineSubmission(node)) : '<div class="small" style="margin-top:6px;color:#999">Visible for context (not assigned to you).</div>'}
+        ${metaHtml}
+        ${descHtml}
+        ${submitHtml}
+        ${submittedFilesHtml}
       </div>
       <div class="actions">
         ${hasChildren ? `<button class="ghost" data-toggle="${node.id}">${open ? 'Collapse' : 'Expand'}</button>` : ''}
@@ -292,7 +371,6 @@ function render() {
 
     container.appendChild(wrapper);
 
-    // children
     if (hasChildren && open) {
       const subtree = document.createElement('div');
       subtree.className = 'subtree';
@@ -301,23 +379,8 @@ function render() {
     }
   }
 
-function renderSidebar(node, level = 0, parentPath = '') {
-    const path = parentPath ? parentPath + ' / ' + node.name : node.name;
-    const row = document.createElement('div');
-    row.className = 'assignment';
-    row.style.paddingLeft = (level * 12) + 'px';
-    row.innerHTML = `<div class="left"><span class="name">${path}</span><div class="meta">${node.__meAssigned ? '<span class="badge">Mine</span>' : ''} • ${node.dueDate ? ('Due ' + fmtDateShort(node.dueDate)) : 'No due'}</div></div>`;
-    if (side) side.appendChild(row);
-    (node.subfolders || []).forEach(ch => renderSidebar(ch, level + 1, path));
-  }
+  tree.forEach(node => renderNode(main, node, 0, ''));
 
-  // Main + sidebar render
-  tree.forEach(node => {
-    renderNode(main, node, 0, '');
-    if (side) renderSidebar(node);
-  });
-
-  // Stats
   if ($('statActive')) $('statActive').textContent = activeCount;
   if ($('statSubmitted')) $('statSubmitted').textContent = submittedCount;
   if ($('statDueSoon')) $('statDueSoon').textContent = dueSoon;
@@ -327,44 +390,17 @@ function renderSidebar(node, level = 0, parentPath = '') {
 /********************
  * Inline Submission *
  ********************/
-function renderInlineSubmission(node) {
-  const allSubs = getSubs();
-  const existing = allSubs.find(s => s.folderId === node.id && s.studentId === String(currentUser.id));
+function renderInlineSubmission(node, existing) {
   const late = node.dueDate && new Date() > new Date(node.dueDate);
-  const gradeLine = existing?.graded ? `<span class="grade">Grade: ${existing.grade ?? '—'}</span>${existing.feedback ? ` • Feedback: ${existing.feedback}` : ''}` : '';
-
-  // Show submitted files
-  const submittedFilesHtml = existing?.fileIds?.length ? `
-    <div class="submitted-files">
-      <div class="small" style="font-weight: 500; margin-bottom: 4px;">📎 Submitted Files:</div>
-      ${existing.fileIds.map(fid => {
-    const file = getFile(fid);
-    return file ? `
-          <div class="submitted-file">
-            <span class="name">${file.name}</span>
-            <span class="download" onclick="downloadFile('${fid}')">Download</span>
-          </div>
-        ` : '';
-  }).join('')}
-    </div>
-  ` : '';
+  const gradeLine = (existing && (existing.status === 'graded' || existing.score != null))
+    ? `<span class="grade">Grade: ${existing.score ?? '—'}</span>${existing.feedback ? ` • Feedback: ${existing.feedback}` : ''}`
+    : '';
 
   return `
     <form class="inline-form" data-submission-form="${node.id}" onsubmit="return false;">
-      <input type="file" id="file-${node.id}" class="file-input" multiple accept="*/*" />
-      <label class="file-label" for="file-${node.id}">${existing ? 'Add more files…' : 'Choose files…'}</label>
-      <button class="${existing ? 'warning' : 'success'}" data-submit="${node.id}">${existing ? 'Update Submission' : 'Submit'}</button>
-      ${existing ? `<button class="ghost" data-download-sub="${existing.id}">My Files</button>
-                  <button class="ghost danger" data-delete-sub="${existing.id}">Delete</button>` : ''}
-     
-      <div class="file-list" data-file-list="${node.id}" style="width: 100%; margin-top: 8px;">
-        <div class="small" style="color: #999; font-style: italic;">No files selected</div>
-      </div>
-     
-      <span class="hint">${existing ? `Submitted: ${fmtDate(existing.submittedAt)}` : 'No submission yet'}</span>
+      
       ${late ? `<span class="status late" title="Past due">LATE</span>` : ''}
       ${gradeLine}
-      ${submittedFilesHtml}
     </form>
   `;
 }
@@ -373,179 +409,117 @@ function renderInlineSubmission(node) {
  * Submission Logic  *
  ********************/
 async function handleSubmit(folderId) {
-  // Guard: must still be assigned and must be a leaf folder
   const folder = findById(getFolders(), folderId);
-  if (!folder) {
-    showNote('Assignment not found', 'error');
-    return;
-
-  }
-  if (!isActive(folder) || !isAssignedToMe(folder)) {
-    showNote('You are not allowed to submit to this assignment.', 'error');
-    return;
-  }
-
+  if (!folder) { showNote('Assignment not found', 'error'); return; }
+ 
   if (folder.subfolders && folder.subfolders.length) {
     showNote('You can only submit to the final child folder.', 'error');
     return;
-
   }
-
-  // Check for selected files
   const selectedFilesForFolder = selectedFiles.get(folderId) || [];
   if (selectedFilesForFolder.length === 0) {
-
     showNote('Please choose at least one file to upload', 'warning');
     return;
-
   }
 
-  const fileIds = await saveFiles(selectedFilesForFolder);
-  const subs = getSubs();
-  let me = subs.find(s => s.folderId === folderId && s.studentId === String(currentUser.id));
-
-  if (me) {
-    // Append files to existing submission
-    me.fileIds = (me.fileIds || []).concat(fileIds);
-    me.submittedAt = new Date().toISOString();
-    me.revisions = (me.revisions || 0) + 1;
-  } else {
-    me = {
-      id: uid('sub'),
-      folderId: folderId,
-      subfolderId: null,
-      studentId: String(currentUser.id),
-      submittedAt: new Date().toISOString(),
-      fileIds,
-      graded: false,
-      grade: null,
-      feedback: ''
-    };
-    subs.push(me);
+  try {
+    const filesPayload = await readFilesAsPayloads(selectedFilesForFolder);
+    const res = await fetch(`${API_BASE}/student/submissions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        folder_id: Number(folderId),
+        files: filesPayload
+      })
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      throw new Error(txt || 'Submission failed');
+    }
+    selectedFiles.delete(folderId); // clear selected files
+    showNote('Submission saved successfully!');
+    render();
+  } catch (e) {
+    showNote('Failed to submit files', 'error');
   }
-
-  saveSubs(subs);
-
-  // Clear selected files after successful submission
-  selectedFiles.delete(folderId);
-
-  showNote(`Submission saved successfully! ${fileIds.length} file(s) uploaded.`);
-  render();
-}
-
-function downloadMySubmission(subId) {
-  const sub = getSubs().find(s => s.id === subId && s.studentId === String(currentUser.id));
-
-  if (!sub) {
-    showNote('Submission not found', 'error');
-    return;
-  }
-  if (!sub.fileIds?.length) {
-    showNote('No files in this submission', 'warning');
-    return;
-  }
-
-  // Download each file individually
-  sub.fileIds.forEach(fid => downloadFile(fid));
-  showNote(`Downloading ${sub.fileIds.length} file(s)...`);
-}
-
-function deleteMySubmission(subId) {
-  const subs = getSubs();
-  const idx = subs.findIndex(s => s.id === subId && s.studentId === String(currentUser.id));
-
-  if (idx === -1) {
-    showNote('Submission not found', 'error');
-    return;
-  }
-  if (!confirm('Delete your submission? This only unlinks the files from this submission.')) return;
-  subs.splice(idx, 1);
-  saveSubs(subs);
-  showNote('Submission deleted');
-  render();
-
 }
 
 /********************
  * Event Wiring      *
  ********************/
-document.addEventListener('DOMContentLoaded', () => {
-  render();
-
-
-  // searching
-  const searchBox = $('searchBox');
-  if (searchBox) {
-    searchBox.addEventListener('input', render);
+document.addEventListener('DOMContentLoaded', async () => {
+  // token = getTokenFromURL();
+  token = getTokenFromURL() || localStorage.getItem(TOKEN_KEY);
+  if (!token) {
+    alert('Not signed in. Redirecting to login.');
+    window.location.href = 'login&register.html';
+    return;
   }
 
-  // File input handling
+  try {
+    currentUser = await fetchCurrentUser();
+  } catch {
+    alert('Session invalid or expired. Redirecting to login.');
+    window.location.href = 'login&register.html';
+    return;
+  }
+
+  if (currentUser.role !== 'student') {
+    alert('You must be a student to view this page.');
+    window.location.href = 'login&register.html';
+    return;
+  }
+
+  if ($('greeting')) {
+    $('greeting').textContent = `Hi, ${currentUser.firstName || currentUser.username || 'Student'}`;
+  }
+
+  render();
+
+  const searchBox = $('searchBox');
+  if (searchBox) searchBox.addEventListener('input', render);
+
   document.addEventListener('change', (e) => {
     if (e.target.matches('.file-input')) {
       const folderId = e.target.id.replace('file-', '');
       addFiles(folderId, e.target.files);
-      // Clear the input to allow re-selecting the same files
       e.target.value = '';
     }
   });
 
-  // delegation for expand/collapse + materials download + submission actions
   document.body.addEventListener('click', async (e) => {
-    const t = e.target;
+    const el = e.target instanceof Element ? e.target : null;
+    if (!el) return;
 
-    // toggle tree
-    const tid = t.getAttribute('data-toggle');
-
-    if (tid) {
-      expanded.has(tid) ? expanded.delete(tid) : expanded.add(tid);
-      render();
+    const toggleEl = el.closest('[data-toggle]');
+    if (toggleEl) {
+      const tid = toggleEl.getAttribute('data-toggle');
+      if (tid) {
+        expanded.has(tid) ? expanded.delete(tid) : expanded.add(tid);
+        render();
+      }
+      return;
     }
 
-    // download lecturer material
-    const mat = t.getAttribute('data-download-mat');
-    if (mat) {
+    const submitEl = el.closest('[data-submit]');
+    if (submitEl) {
       e.preventDefault();
-      downloadFile(mat);
+      const subFor = submitEl.getAttribute('data-submit');
+      if (subFor) await handleSubmit(subFor);
+      return;
     }
-
-
-    // submit/update submission
-    const subFor = t.getAttribute('data-submit');
-    if (subFor) {
-      e.preventDefault();
-      await handleSubmit(subFor);
-    }
-
-    // download my submission files
-    const dsub = t.getAttribute('data-download-sub');
-    if (dsub) {
-      e.preventDefault();
-      downloadMySubmission(dsub);
-    }
-
-    // delete my submission
-    const del = t.getAttribute('data-delete-sub');
-    if (del) {
-      e.preventDefault();
-      deleteMySubmission(del);
-    }
-
   });
-
-  // listen to storage changes (another tab/lecturer updates)
-  window.addEventListener('storage', (ev) => {
-    if ([STORAGE_FOLDERS, STORAGE_SUBS, FILES_KEY].includes(ev.key)) render();
-  });
-
-  // logout
 
   const logoutBtn = $('logoutBtn');
   if (logoutBtn) {
     logoutBtn.addEventListener('click', () => {
-      localStorage.removeItem(SESSION_KEY);
+      // Optionally clear local token if it was used
+      try { localStorage.removeItem(TOKEN_KEY); } catch {}
       window.location.href = 'login&register.html';
     });
   }
-
 });
 
