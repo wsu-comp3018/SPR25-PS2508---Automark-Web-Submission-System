@@ -1668,8 +1668,7 @@ async function loadHistoricData(filters = {}) {
         ]);
         
         historicSubmissions = submissions;
-        // Use grouped-by-student view by default
-        renderHistoricDirectoryGrouped();
+        renderHistoricDirectory();
         renderHistoricStatistics(statistics);
         
         console.log(`✅ Loaded ${submissions.length} historic submissions`);
@@ -1678,121 +1677,6 @@ async function loadHistoricData(filters = {}) {
         console.error('❌ Error loading historic data:', error);
         showNotification('Failed to load historic directory data', 'error');
     }
-}
-
-
-function renderHistoricDirectoryGrouped() {
-    const container = document.getElementById('historicDirectoryContent');
-    if (!container) return;
-    
-    if (!Array.isArray(historicSubmissions) || historicSubmissions.length === 0) {
-        container.innerHTML = `
-            <div class="empty-state">
-                <div style="font-size: 48px; margin-bottom: 16px;">📊</div>
-                <h3>No Historic Submissions Found</h3>
-                <p>No submissions match your current filters.</p>
-                <button onclick="clearHistoricFilters()" class="ghost">Clear Filters</button>
-            </div>
-        `;
-        return;
-    }
-
-    // Group submissions by student username
-    const byUser = historicSubmissions.reduce((acc, s) => {
-        const key = s.username || s.email || `${s.first_name || ''} ${s.last_name || ''}`.trim() || 'Unknown';
-        if (!acc[key]) {
-            acc[key] = {
-                user: {
-                    username: s.username || '',
-                    first_name: s.first_name || '',
-                    last_name: s.last_name || '',
-                    email: s.email || ''
-                },
-                items: []
-            };
-        }
-        acc[key].items.push(s);
-        return acc;
-    }, {});
-
-    // Sort each student's submissions by submitted_at desc
-    Object.values(byUser).forEach(group => {
-        group.items.sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at));
-    });
-
-    const groups = Object.values(byUser).sort((a, b) => {
-        // Sort student groups alphabetically by last_name, then first_name, then username
-        const an = `${a.user.last_name} ${a.user.first_name} ${a.user.username}`.toLowerCase();
-        const bn = `${b.user.last_name} ${b.user.first_name} ${b.user.username}`.toLowerCase();
-        return an.localeCompare(bn);
-    });
-
-    const header = `
-        <div class="historic-header">
-            <div class="historic-meta">
-                Showing ${historicSubmissions.length} submission${historicSubmissions.length !== 1 ? 's' : ''}
-                ${historicFilters?.subject_code ? `for ${historicFilters.subject_code}` : ''}
-            </div>
-            <button onclick="exportHistoricData()" class="success">📥 Export Data</button>
-        </div>
-    `;
-
-    const body = `
-        <div class="historic-list">
-            ${groups.map(group => {
-                const fullName = `${group.user.first_name} ${group.user.last_name}`.trim();
-                const displayName = fullName || group.user.username || group.user.email || 'Unknown Student';
-                const subCount = group.items.length;
-                const userIdAttr = group.user.username ? `data-username="${group.user.username}"` : '';
-                return `
-                    <div class="student-group">
-                        <div class="student-header" ${userIdAttr} style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:1px solid #e0e0e0;border-radius:6px;background:#fafafa;margin:10px 0;">
-                            <div>
-                                <strong>${displayName}</strong>
-                                <div class="small" style="color:#666;">
-                                    ${group.user.username ? `@${group.user.username}` : ''} ${group.user.email ? `• ${group.user.email}` : ''}
-                                </div>
-                            </div>
-                            <div class="badge" style="background:#eee;border-radius:12px;padding:4px 10px;">
-                                ${subCount} submission${subCount !== 1 ? 's' : ''}
-                            </div>
-                        </div>
-                        <div class="student-submissions hidden">
-                            ${group.items.map(item => `
-                                <div class="submission-row" data-submission-id="${item.id}" style="padding:10px 8px;border-bottom:1px solid #f0f0f0;">
-                                    <div class="submission-title" style="font-weight:600;">
-                                        ${new Date(item.submitted_at).toLocaleString()}
-                                    </div>
-                                    <div class="submission-meta small" style="color:#555;margin-top:2px;">
-                                        ${item.subject_code} • ${item.assignment_name} • 
-                                        Status: <span class="status-badge ${item.status}">${item.status}</span> •
-                                        ${item.score !== null ? `Score: ${item.score}/${item.max_points}` : 'Not graded'}
-                                    </div>
-                                    ${item.feedback ? `<div class="submission-feedback" style="margin-top:6px;">${item.feedback}</div>` : ''}
-                                    <div class="submission-actions" style="margin-top:8px;">
-                                        <button onclick="viewSubmissionDetails(${item.id})" class="ghost">View Details</button>
-                                        ${item.status !== 'graded' ? `<button onclick="gradeSubmission(${item.id})" class="success">Grade</button>` : ''}
-                                    </div>
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                `;
-            }).join('')}
-        </div>
-    `;
-
-    const html = header + body;
-    container.innerHTML = html;
-
-    // Wire up expand/collapse
-    container.querySelectorAll('.student-header').forEach(h => {
-        h.addEventListener('click', () => {
-            const body = h.nextElementSibling;
-            const isHidden = !body || body.style.display === 'none' || body.style.display === '';
-            if (body) body.style.display = isHidden ? 'block' : 'none';
-        });
-    });
 }
 
 // Render historic directory
@@ -1977,97 +1861,43 @@ function convertToCSV(data) {
 }
 
 // View submission details
-async function viewSubmissionDetails(submissionId) {
-    try {
-        // Find base submission metadata from already loaded historicSubmissions
-        const submission = historicSubmissions.find(s => s.id === submissionId);
-        if (!submission) {
-            showNotification('Submission not found', 'error');
-            return;
-        }
+function viewSubmissionDetails(submissionId) {
+    const submission = historicSubmissions.find(s => s.id === submissionId);
+    if (!submission) {
+        showNotification('Submission not found', 'error');
+        return;
+    }
+    
+    
+    const details = `
+        Student: ${submission.first_name} ${submission.last_name} (${submission.email})
+        Assignment: ${submission.assignment_name}
+        Subject: ${submission.subject_code}
+        Submitted: ${new Date(submission.submitted_at).toLocaleString()}
+        ${submission.score !== null ? `Score: ${submission.score}/${submission.max_points}` : 'Not graded yet'}
+        Status: ${submission.status}
+        ${submission.feedback ? `Feedback: ${submission.feedback}` : ''}
+    `;
+    
+    alert(details);
+}
 
-        // Fetch artifacts lazily from backend (stored in DB)
-        const artifacts = await apiCall(`/submissions/${submissionId}/artifacts`);
-        let prettyJson = '';
-        try {
-            if (artifacts.result_json) {
-                const parsed = JSON.parse(artifacts.result_json);
-                prettyJson = JSON.stringify(parsed, null, 2);
-            }
-        } catch {
-            prettyJson = artifacts.result_json || '';
-        }
-
-        const logText = artifacts.runner_log || '';
-
-        // Render in a modal instead of alert()
-        openSubmissionDetailsModal({
-            submission,
-            resultJson: prettyJson,
-            runnerLog: logText
+// Initialize historic directory
+function initializeHistoricDirectory() {
+    // This will be called when the historic directory tab is opened
+    loadHistoricData();
+    
+    // Populate subject filter
+    const subjectFilter = document.getElementById('historicSubjectFilter');
+    if (subjectFilter) {
+        subjectFilter.innerHTML = '<option value="">All Subjects</option>';
+        lecturerSubjects.forEach(subject => {
+            const option = document.createElement('option');
+            option.value = subject.code;
+            option.textContent = `${subject.code} - ${subject.name}`;
+            subjectFilter.appendChild(option);
         });
-    } catch (error) {
-        console.error('Failed to load submission details:', error);
-        showNotification('Failed to load submission details', 'error');
     }
 }
-function openSubmissionDetailsModal({ submission, resultJson, runnerLog }) {
-    let modal = document.getElementById('submissionDetailsModal');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'submissionDetailsModal';
-        modal.className = 'modal';
-        modal.innerHTML = `
-            <div class="modal-content panel" style="max-width: 900px;">
-                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-                    <h3>Submission Details</h3>
-                    <button class="ghost" onclick="closeSubmissionDetailsModal()">Close</button>
-                </div>
-                <div class="section">
-                    <div class="muted">
-                        Student: <strong id="sdm-student"></strong><br/>
-                        Assignment: <span id="sdm-assignment"></span><br/>
-                        Submitted: <span id="sdm-submitted"></span><br/>
-                        Status: <span id="sdm-status" class="status-badge"></span>
-                        <span id="sdm-score"></span>
-                    </div>
-                </div>
-                <div class="section">
-                    <h4>Result JSON</h4>
-                    <pre id="sdm-result" style="background:#0b1021;color:#d1e7ff;padding:10px;border-radius:8px;max-height:260px;overflow:auto;"></pre>
-                </div>
-                <div class="section">
-                    <h4>Runner Log</h4>
-                    <pre id="sdm-log" style="background:#0b1021;color:#d1e7ff;padding:10px;border-radius:8px;max-height:260px;overflow:auto;"></pre>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modal);
-    }
 
-    // Populate
-    document.getElementById('sdm-student').textContent =
-        `${submission.first_name} ${submission.last_name} (${submission.username})`;
-    document.getElementById('sdm-assignment').textContent =
-        `${submission.subject_code} • ${submission.assignment_name}`;
-    document.getElementById('sdm-submitted').textContent =
-        new Date(submission.submitted_at).toLocaleString();
-    const statusEl = document.getElementById('sdm-status');
-    statusEl.textContent = submission.status;
-    statusEl.className = `status-badge ${submission.status}`;
-    document.getElementById('sdm-score').textContent =
-        submission.score !== null ? ` • Score: ${submission.score}/${submission.max_points}` : '';
 
-    document.getElementById('sdm-result').textContent = resultJson || '(No result.json saved)';
-    document.getElementById('sdm-log').textContent = runnerLog || '(No runner.log saved)';
-
-    modal.style.display = 'block';
-}
-function closeSubmissionDetailsModal() {
-    const modal = document.getElementById('submissionDetailsModal');
-    if (modal) modal.style.display = 'none';
-}
-
-// Expose close function
-window.closeSubmissionDetailsModal = closeSubmissionDetailsModal;
-// Close modal

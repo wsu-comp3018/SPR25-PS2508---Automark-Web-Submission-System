@@ -27,7 +27,7 @@ import zipfile
 import uuid
 
 # Local modules for SVN → sandbox flow (make sure these files exist under app/)
-from . import storage, worker, docker_runner, file_storage
+from . import storage, worker, docker_runner
 
 
 # SSH user management (adjust path if this module lives elsewhere)
@@ -108,11 +108,8 @@ def init_db():
                 updated_at TEXT NOT NULL,
                 lecturer_id INTEGER NOT NULL,
                 subject_code TEXT NOT NULL,
-                template_id INTEGER,
-                assignment_number INTEGER,
                 FOREIGN KEY (lecturer_id) REFERENCES users(id),
-                FOREIGN KEY (subject_code) REFERENCES subjects(code),
-                FOREIGN KEY (template_id) REFERENCES assignment_templates(id)
+                FOREIGN KEY (subject_code) REFERENCES subjects(code)
             )
         """)
         
@@ -169,8 +166,8 @@ def init_db():
             existing = {row[1] for row in cur.fetchall()}  # row[1] = column name
             to_add = [(name, ddl) for name, ddl in specs.items() if name not in existing]
             for name, ddl in to_add:
-                print(f"   ➕ {table}.{name}  (ALTER TABLE ... ADD COLUMN {name} {ddl})")
-                cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                print(f"   ➕ {table}.{name}  (ALTER TABLE ... ADD COLUMN {ddl})")
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
             if to_add:
                 conn.commit()
 
@@ -183,9 +180,7 @@ def init_db():
         })
         # NEW: add lecturer_file_ids column to folders if missing
         ensure_columns("folders", {
-            "lecturer_file_ids": "TEXT",   # JSON array of file IDs (marker / reference files)
-            "template_id": "INTEGER",       # Link to assignment_templates table
-            "assignment_number": "INTEGER"  # Assignment number for this subject
+            "lecturer_file_ids": "TEXT"   # JSON array of file IDs (marker / reference files)
         })
 
         print("📝 INIT_DB: Creating subjects table...")
@@ -207,21 +202,12 @@ def init_db():
                 name TEXT NOT NULL,
                 type TEXT NOT NULL,
                 size INTEGER NOT NULL,
-                content BLOB,
-                file_path TEXT,
-                checksum TEXT,
+                content BLOB NOT NULL,
                 uploaded_at TEXT NOT NULL,
                 uploaded_by INTEGER NOT NULL,
-                FOREIGN KEY (uploaded_by) REFERENCES users(id),
-                CHECK (content IS NOT NULL OR file_path IS NOT NULL)
+                FOREIGN KEY (uploaded_by) REFERENCES users(id)
             )
         """)
-        
-        # Migrate existing files table if needed
-        ensure_columns("files", {
-            "file_path": "TEXT",
-            "checksum": "TEXT"
-        })
         
         print("👨‍🎓 INIT_DB: Creating hardcoded students...")
         now = now_iso()
@@ -647,9 +633,6 @@ class FolderCreate(BaseModel):
     subject_code: str
     student_ids: List[int] = []
     files: Optional[List["FileCreate"]] = []  # NEW: lecturer-only files (e.g., marker script)
-    create_svn_template: bool = True  # NEW: Auto-create SVN template and student repos
-    assignment_number: Optional[int] = None  # NEW: Assignment number (auto-detect if None)
-    template_files: Optional[Dict[str, str]] = None  # NEW: Custom template files for SVN
 
 class FolderUpdate(BaseModel):
     name: Optional[str] = None
@@ -745,45 +728,6 @@ def health_check():
 def ping():
     return {"pong": True}
 
-@app.get("/api/v1/submissions/{submission_id}/artifacts")
-def get_submission_artifacts(submission_id: int, current_user: dict = Depends(get_current_user)):
-    """
-    Return stored artifacts (result_json and runner_log) for a submission.
-    Security:
-      - Students: only their own
-      - Lecturers: only for folders they own
-    """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    try:
-        c.execute("SELECT * FROM submissions WHERE id = ?", (submission_id,))
-        row = c.fetchone()
-        if not row:
-            raise HTTPException(404, "Submission not found")
-        sub = dict(row)
-
-        # AuthZ checks
-        if current_user["role"] == "student":
-            if sub["student_id"] != current_user["id"]:
-                raise HTTPException(403, "Forbidden")
-        elif current_user["role"] == "lecturer":
-            c.execute("SELECT lecturer_id FROM folders WHERE id = ?", (sub["folder_id"],))
-            owner = c.fetchone()
-            if not owner or owner[0] != current_user["id"]:
-                raise HTTPException(403, "Forbidden")
-        else:
-            raise HTTPException(403, "Forbidden")
-
-        # Return as-is; frontend can prettify JSON
-        return {
-            "submission_id": submission_id,
-            "result_json": sub.get("result_json"),
-            "runner_log": sub.get("runner_log"),
-        }
-    finally:
-        conn.close()
-        
 @app.get("/api/v1/users/public")
 async def get_all_users_public():
     """Get all registered users (public access - read only)"""
@@ -986,69 +930,6 @@ def login(body: LoginIn):
 # --- Small helpers (added) ---
 def _dict_rows(c: sqlite3.Cursor) -> List[dict]:
     return [dict(r) for r in c.fetchall()]
-def _ensure_submission_result_columns():
-    """Ensure submissions table has result_json and runner_log columns (runtime safe)."""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("PRAGMA table_info(submissions);")
-        cols = {r[1] for r in c.fetchall()}
-        to_add = []
-        if "result_json" not in cols:
-            to_add.append(("result_json", "TEXT"))
-        if "runner_log" not in cols:
-            to_add.append(("runner_log", "TEXT"))
-        for name, typ in to_add:
-            try:
-                c.execute(f"ALTER TABLE submissions ADD COLUMN {name} {typ}")
-                conn.commit()
-                logger.info(f"Added missing column {name} to submissions")
-            except sqlite3.OperationalError as e:
-                logger.warning(f"Could not add column {name} (maybe race condition): {e}")
-    except Exception as e:
-        logger.error(f"_ensure_submission_result_columns failed: {e}")
-    finally:
-        try: conn.close()
-        except: pass
-
-
-# --- In _process_svn_job_results(...), after reading result.json and before committing ---
-        # Ensure DB has result columns
-        _ensure_submission_result_columns()
-
-        # Load runner log (best-effort)
-        runner_log_text = None
-        log_path = results_dir / "runner.log"
-        try:
-            if log_path.exists():
-                runner_log_text = log_path.read_text(encoding="utf-8", errors="replace")
-                # Optional: truncate very large logs
-                if len(runner_log_text) > 200_000:
-                    runner_log_text = runner_log_text[:200_000] + "\n...[truncated]..."
-        except Exception as e:
-            logger.warning(f"Could not read runner.log: {e}")
-
-        # Serialize result.json content for storage
-        raw_result_json = None
-        try:
-            if result_file.exists():
-                raw_result_json = result_file.read_text(encoding="utf-8", errors="replace")
-        except Exception as e:
-            logger.warning(f"Could not read raw result.json: {e}")
-
-        # Create or update submission (existing code) ...
-        # After we compute submission_id (in both branches), persist artifacts:
-        # Update existing submission
-            c.execute("""
-                UPDATE submissions 
-                SET score = ?, feedback = ?, status = ?, graded_at = ?, result_json = ?, runner_log = ?
-                WHERE id = ?
-            """, (score, feedback, status, now, raw_result_json, runner_log_text, existing_sub[0]))
-        # Create new submission
-            c.execute("""
-                INSERT INTO submissions (folder_id, student_id, submitted_at, score, feedback, status, graded_at, revisions, result_json, runner_log)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-            """, (folder_id, student_id, now, score, feedback, status, now, raw_result_json, runner_log_text))
 
 def _ensure_lecturer(current_user: dict):
     if current_user.get("role") != "lecturer":
@@ -1200,7 +1081,7 @@ def get_student_folders(current_user: dict = Depends(get_current_user)):
 
 @app.post("/api/v1/folders")
 async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_current_user)):
-    """Create a new assignment folder with optional SVN template creation."""
+    """Create a new assignment folder (optionally with lecturer marker/reference files)."""
     if current_user["role"] != "lecturer":
         raise HTTPException(status_code=403, detail="Only lecturers can create folders")
 
@@ -1209,34 +1090,11 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     try:
-        # Get subject info and determine assignment number
-        c.execute("SELECT id, code, name FROM subjects WHERE code = ?", (folder.subject_code.strip(),))
-        subject_result = c.fetchone()
-        if not subject_result:
-            raise HTTPException(404, f"Subject {folder.subject_code} not found")
-        
-        subject_id = subject_result["id"] if isinstance(subject_result, sqlite3.Row) else subject_result[0]
-        subject_code = subject_result["code"] if isinstance(subject_result, sqlite3.Row) else subject_result[1]
-        
-        # Auto-detect assignment number if not provided
-        assignment_number = folder.assignment_number
-        if assignment_number is None:
-            c.execute("""
-                SELECT MAX(assignment_number) 
-                FROM folders 
-                WHERE subject_code = ? AND lecturer_id = ?
-            """, (folder.subject_code.strip(), current_user["id"]))
-            max_num = c.fetchone()[0]
-            assignment_number = (max_num or 0) + 1
-        
         now = now_iso()
-        semester, year = current_semester_year()
-        
         c.execute("""
             INSERT INTO folders (name, description, due_date, max_points, status,
-                                 created_at, updated_at, lecturer_id, subject_code, 
-                                 lecturer_file_ids, assignment_number, template_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 created_at, updated_at, lecturer_id, subject_code, lecturer_file_ids)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             folder.name.strip(),
             (folder.description or None),
@@ -1247,26 +1105,16 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
             now,
             current_user["id"],
             folder.subject_code.strip(),
-            None,  # placeholder; update after file insert
-            assignment_number,
-            None  # placeholder; update after template creation
+            None  # placeholder; update after file insert
         ))
         folder_id = c.lastrowid
 
         lecturer_file_ids_json = None
-        file_paths = []
-        
         # Store lecturer files if provided
         if folder.files:
             file_ids = _insert_lecturer_files(c, current_user["id"], folder.files)
             lecturer_file_ids_json = json.dumps(file_ids)
             c.execute("UPDATE folders SET lecturer_file_ids = ? WHERE id = ?", (lecturer_file_ids_json, folder_id))
-            
-            # Get file paths for copying to marker directory
-            if file_ids:
-                placeholders = ",".join(["?"] * len(file_ids))
-                c.execute(f"SELECT file_path FROM files WHERE id IN ({placeholders})", file_ids)
-                file_paths = [row[0] for row in c.fetchall() if row[0]]
 
         # Auto-assign actively enrolled students (unchanged)
         assigned = 0
@@ -1291,103 +1139,6 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
             logger.warning(f"Auto-assign students failed for folder {folder_id}: {e}")
 
         conn.commit()
-        
-        # CRITICAL: Copy marker files to assignment directory after commit
-        if file_paths:
-            try:
-                marker_dir = file_storage.copy_marker_files_to_assignment(file_paths, folder_id)
-                logger.info(f"Marker files copied to: {marker_dir}")
-            except Exception as e:
-                logger.error(f"Failed to copy marker files for folder {folder_id}: {e}")
-        
-        # NEW: Create SVN template and student repositories if requested
-        template_id = None
-        svn_created = False
-        students_updated = 0
-        
-        if folder.create_svn_template:
-            try:
-                # Create assignment template in database
-                svn_path = f"templates/{year}-{semester}-{subject_code}-Assignment{assignment_number}"
-                
-                c.execute("""
-                    INSERT INTO assignment_templates 
-                    (subject_id, name, description, semester, year, assignment_number, 
-                     svn_path, due_date, max_points, status, created_at, updated_at, created_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    subject_id,
-                    folder.name.strip(),
-                    folder.description,
-                    semester,
-                    year,
-                    assignment_number,
-                    svn_path,
-                    folder.due_date,
-                    folder.max_points,
-                    'draft' if folder.status == 'draft' else 'published',
-                    now,
-                    now,
-                    current_user["id"]
-                ))
-                
-                template_id = c.lastrowid
-                
-                # Link folder to template
-                c.execute("UPDATE folders SET template_id = ? WHERE id = ?", (template_id, folder_id))
-                conn.commit()
-                
-                logger.info(f"Created assignment template {template_id} for folder {folder_id}")
-                
-                # Create SVN template with marker files
-                svn_created = create_svn_template_with_markers(
-                    svn_path=svn_path,
-                    name=folder.name,
-                    template_files=folder.template_files or {},
-                    marker_file_paths=file_paths,
-                    folder_id=folder_id
-                )
-                
-                if svn_created:
-                    logger.info(f"SVN template created successfully: {svn_path}")
-                    
-                    # Create student submission repositories for enrolled students
-                    from ssh_user_manager import update_user_directories, create_student_submission_repo
-                    
-                    c.execute("""
-                        SELECT DISTINCT u.username
-                        FROM subject_enrollments se
-                        JOIN users u ON se.student_id = u.id
-                        WHERE se.subject_id = ? AND se.semester = ? AND se.year = ? AND se.status = 'active'
-                    """, (subject_id, semester, year))
-                    
-                    enrolled_students = c.fetchall()
-                    assignment_path = f"{year}-{semester}-{subject_code}-Assignment{assignment_number}"
-                    
-                    for (username,) in enrolled_students:
-                        try:
-                            # Update SSH directories
-                            dir_result = update_user_directories(username)
-                            if dir_result.get("success"):
-                                students_updated += 1
-                                logger.info(f"Updated SSH directories for {username}")
-                            
-                            # Create student submission repository
-                            repo_result = create_student_submission_repo(username, assignment_path)
-                            if repo_result["success"]:
-                                logger.info(f"Created submission repo for {username}: {assignment_path}")
-                            else:
-                                logger.warning(f"Failed to create submission repo for {username}: {repo_result.get('error')}")
-                                
-                        except Exception as e:
-                            logger.error(f"Error setting up {username} for assignment: {e}")
-                else:
-                    logger.warning(f"SVN template creation failed for folder {folder_id}")
-                    
-            except Exception as e:
-                logger.error(f"Error creating SVN template for folder {folder_id}: {e}")
-                import traceback
-                traceback.print_exc()
 
         lecturer_files_count = 0
         if lecturer_file_ids_json:
@@ -1408,11 +1159,7 @@ async def create_folder(folder: FolderCreate, current_user: dict = Depends(get_c
             "lecturer_id": current_user["id"],
             "subject_code": folder.subject_code,
             "assigned_students_count": assigned,
-            "lecturer_files_count": lecturer_files_count,
-            "assignment_number": assignment_number,
-            "template_id": template_id,
-            "svn_created": svn_created,
-            "students_updated": students_updated
+            "lecturer_files_count": lecturer_files_count
         }
 
     except sqlite3.Error as e:
@@ -1478,33 +1225,14 @@ def update_folder(folder_id: int, payload: FolderUpdate, current_user: dict = De
             remove_set = set(int(x) for x in payload.remove_file_ids)
             to_delete = [fid for fid in existing_file_ids if fid in remove_set]
             if to_delete:
-                # Get file paths before deletion for cleanup
-                placeholders = ",".join(["?"] * len(to_delete))
-                c.execute(f"SELECT file_path FROM files WHERE id IN ({placeholders})", to_delete)
-                file_paths_to_delete = [row[0] for row in c.fetchall() if row[0]]
-                
-                # Delete from database
                 existing_file_ids = [fid for fid in existing_file_ids if fid not in remove_set]
+                placeholders = ",".join(["?"] * len(to_delete))
                 c.execute(f"DELETE FROM files WHERE id IN ({placeholders})", to_delete)
-                
-                # Delete from filesystem
-                for file_path in file_paths_to_delete:
-                    try:
-                        file_storage.delete_file(file_path)
-                    except Exception as e:
-                        logger.warning(f"Failed to delete file {file_path}: {e}")
 
         # Append new lecturer files if provided
-        new_file_paths = []
         if payload.files:
             new_ids = _insert_lecturer_files(c, current_user["id"], payload.files)
             existing_file_ids.extend(new_ids)
-            
-            # Get file paths for the new files
-            if new_ids:
-                placeholders = ",".join(["?"] * len(new_ids))
-                c.execute(f"SELECT file_path FROM files WHERE id IN ({placeholders})", new_ids)
-                new_file_paths = [row[0] for row in c.fetchall() if row[0]]
 
         # Persist updated lecturer_file_ids if changed
         c.execute("UPDATE folders SET lecturer_file_ids = ? WHERE id = ?",
@@ -1546,14 +1274,6 @@ def update_folder(folder_id: int, payload: FolderUpdate, current_user: dict = De
                 """, (folder_id, sid, now_iso()))
 
         conn.commit()
-        
-        # Copy new marker files to assignment directory after commit
-        if new_file_paths:
-            try:
-                marker_dir = file_storage.copy_marker_files_to_assignment(new_file_paths, folder_id)
-                logger.info(f"Updated marker files copied to: {marker_dir}")
-            except Exception as e:
-                logger.error(f"Failed to copy updated marker files for folder {folder_id}: {e}")
 
         c.execute("""
             SELECT id, name, description, due_date, max_points, status,
@@ -1944,92 +1664,8 @@ async def create_assignment_template(template: AssignmentTemplateCreate, current
     finally:
         conn.close()
 
-def create_svn_template_with_markers(svn_path: str, name: str, template_files: Dict, marker_file_paths: List[str], folder_id: int):
-    """
-    Create SVN template structure with marker files included.
-    Marker files are NOT visible to students - they stay on the server.
-    """
-    import subprocess
-    import tempfile
-    import os
-    
-    logger.info(f"Creating SVN template at {svn_path} with name '{name}' and {len(marker_file_paths)} marker files")
-    
-    try:
-        # Create temporary working directory
-        with tempfile.TemporaryDirectory() as temp_dir:
-            work_dir = os.path.join(temp_dir, "svn-work")
-            
-            # Checkout the SVN repository using direct SVN connection to the SVN container
-            checkout_cmd = [
-                "svn", "checkout", "svn://automark-svn/automark", work_dir, "--force",
-                "--username", "admin", "--password", "adminpass123", "--no-auth-cache"
-            ]
-            result = subprocess.run(checkout_cmd, capture_output=True, text=True, timeout=30)
-            
-            if result.returncode != 0:
-                logger.error(f"SVN checkout failed: {result.stderr}")
-                return False
-            
-            # Create template directory structure
-            template_dir = os.path.join(work_dir, svn_path)
-            os.makedirs(template_dir, exist_ok=True)
-        
-            # Create default template structure if no template_files provided
-            if not template_files:
-                template_files = create_default_template_structure(name)
-            
-            # Create each template file
-            for file_path, content in template_files.items():
-                full_path = os.path.join(template_dir, file_path)
-                
-                # Create directory if needed
-                dir_path = os.path.dirname(full_path)
-                if dir_path != template_dir:
-                    os.makedirs(dir_path, exist_ok=True)
-                
-                # Create file content
-                with open(full_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                
-                logger.info(f"Created template file: {file_path}")
-            
-            # Add files to SVN
-            svn_add_cmd = [
-                "svn", "add", svn_path, "--force"
-            ]
-            result = subprocess.run(svn_add_cmd, cwd=work_dir, capture_output=True, text=True, timeout=20)
-            
-            if result.returncode != 0:
-                logger.error(f"SVN add failed: {result.stderr}")
-                return False
-            
-            # Commit the template
-            commit_cmd = [
-                "svn", "commit", "-m", f"Create assignment template: {name}",
-                "--username", "admin", "--password", "adminpass123", "--no-auth-cache"
-            ]
-            result = subprocess.run(commit_cmd, cwd=work_dir, capture_output=True, text=True, timeout=30)
-            
-            if result.returncode != 0:
-                logger.error(f"SVN commit failed: {result.stderr}")
-                return False
-        
-            logger.info(f"✅ Successfully created SVN template: {svn_path}")
-            logger.info(f"✅ Marker files remain on server at: /app/data/assignments/{folder_id}/marker/")
-            return True
-        
-    except subprocess.TimeoutExpired:
-        logger.error("SVN template creation timed out")
-        return False
-    except Exception as e:
-        logger.error(f"Error creating SVN template: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
 def create_svn_template(svn_path: str, name: str, template_files: Dict):
-    """Create SVN template structure by communicating with SVN container (legacy function)"""
+    """Create SVN template structure by communicating with SVN container"""
     import subprocess
     import tempfile
     import shutil
@@ -2271,81 +1907,6 @@ class SVNJobIn(BaseModel):
     svn_url: str
     revision: int
 
-def _process_svn_job_results(job_id: int, folder_id: int, svn_url: str, revision: int, results_dir):
-    """Process SVN job results and create/update submission in database."""
-    try:
-        # Get student username from SVN job
-        conn = sqlite3.connect(DB_PATH); c = conn.cursor()
-        c.execute("SELECT student_username FROM svn_jobs WHERE id = ?", (job_id,))
-        row = c.fetchone()
-        if not row:
-            logger.error(f"❌ Could not find SVN job {job_id}")
-            return
-        student_username = row[0]
-        
-        # Find student_id from username
-        c.execute("SELECT id FROM users WHERE username = ? AND role = 'student'", (student_username,))
-        student_row = c.fetchone()
-        if not student_row:
-            logger.error(f"❌ Could not find student with username {student_username}")
-            return
-        student_id = student_row[0]
-        
-        # Read result.json if it exists
-        result_file = results_dir / "result.json"
-        score = None
-        feedback = None
-        status = "submitted"
-        
-        if result_file.exists():
-            try:
-                result_data = json.loads(result_file.read_text())
-                score = result_data.get("score")
-                feedback = result_data.get("message", "")
-                if result_data.get("ok", False):
-                    status = "graded"
-                logger.info(f"📊 Processed result.json: score={score}, feedback={feedback[:50]}...")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to parse result.json: {e}")
-                feedback = f"Error parsing results: {e}"
-        
-        # Create or update submission
-        now = now_iso()
-        c.execute("""
-            SELECT id FROM submissions 
-            WHERE folder_id = ? AND student_id = ? 
-            ORDER BY id DESC LIMIT 1
-        """, (folder_id, student_id))
-        existing_sub = c.fetchone()
-        
-        if existing_sub:
-            # Update existing submission
-            c.execute("""
-                UPDATE submissions 
-                SET score = ?, feedback = ?, status = ?, graded_at = ?
-                WHERE id = ?
-            """, (score, feedback, status, now, existing_sub[0]))
-            submission_id = existing_sub[0]
-            logger.info(f"✅ Updated submission {submission_id} for student {student_username}")
-        else:
-            # Create new submission
-            c.execute("""
-                INSERT INTO submissions (folder_id, student_id, submitted_at, score, feedback, status, graded_at, revisions)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-            """, (folder_id, student_id, now, score, feedback, status, now))
-            submission_id = c.lastrowid
-            logger.info(f"✅ Created submission {submission_id} for student {student_username}")
-        
-        conn.commit()
-        logger.info(f"🎯 SVN job {job_id} results processed successfully")
-        
-    except Exception as e:
-        logger.error(f"❌ Error processing SVN job {job_id} results: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        conn.close()
-
 def _run_svn_job(job_id: int):
     """Export code from SVN and run marker in a fresh Docker container."""
     # update -> running
@@ -2399,26 +1960,18 @@ def _run_svn_job(job_id: int):
                    now_iso(),
                    job_id))
         conn.commit()
-        
-        # NEW: Process results if job completed successfully
-        if exit_code == 0:
-            _process_svn_job_results(job_id, folder_id, svn_url, revision, results_dir)
     finally:
         conn.close()
 
 @app.post("/api/v1/submissions/receive_svn")
 def receive_submission_svn(body: SVNJobIn):
     """Called by SVN post-commit (or poller) to trigger a sandbox run."""
-    logger.info(f"📥 Received SVN submission: student={body.student_username}, folder_id={body.folder_id}, revision={body.revision}")
-    logger.info(f"🔗 SVN URL: {body.svn_url}")
-    
     now = now_iso()
     conn = sqlite3.connect(DB_PATH); c = conn.cursor()
     try:
         # basic validation: folder exists
         c.execute("SELECT id FROM folders WHERE id = ?", (body.folder_id,))
         if not c.fetchone():
-            logger.error(f"❌ Folder {body.folder_id} not found for SVN submission")
             raise HTTPException(404, "Folder not found")
 
         c.execute("""INSERT INTO svn_jobs(folder_id, student_username, svn_url, revision, status, created_at)
@@ -2426,12 +1979,10 @@ def receive_submission_svn(body: SVNJobIn):
                   (body.folder_id, body.student_username, body.svn_url, int(body.revision), now))
         job_id = c.lastrowid
         conn.commit()
-        logger.info(f"✅ Created job {job_id} for SVN submission")
     finally:
         conn.close()
 
     # kick off a background thread for this job
-    logger.info(f"🚀 Starting background thread for job {job_id}")
     threading.Thread(target=_run_svn_job, args=(job_id,), daemon=True).start()
     return {"job_id": job_id, "status": "queued"}
 
@@ -2867,44 +2418,39 @@ def _ensure_lecturer_files_column():
 # --- NEW: lecturer file insertion helper (used by create/update folder) ---
 def _insert_lecturer_files(c: sqlite3.Cursor, uploader_id: int, files: List[FileCreate]) -> List[int]:
     """
-    Save lecturer files to filesystem and store metadata in database.
+    Persist lecturer-only files (e.g., marker scripts) into files table.
     Returns list of inserted file IDs.
     """
     inserted: List[int] = []
     if not files:
         return inserted
-    
     now = now_iso()
     for f in files:
         try:
-            # Save file to filesystem
-            file_info = file_storage.save_file_to_disk(
-                name=f.name,
-                content_b64=f.content,
-                file_type=f.type or "application/octet-stream",
-                subdir="markers"
-            )
-            
-            # Store metadata in database
-            c.execute("""
-                INSERT INTO files (name, type, size, file_path, checksum, uploaded_at, uploaded_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                file_info["name"],
-                file_info["type"],
-                file_info["size"],
-                file_info["file_path"],
-                file_info["checksum"],
-                now,
-                uploader_id
-            ))
-            inserted.append(c.lastrowid)
-            logger.info(f"Saved lecturer file: {f.name} (ID: {c.lastrowid}, Path: {file_info['file_path']})")
-            
+            content_b64 = f.content
+            # Accept data URLs
+            if "," in content_b64:
+                content_b64 = content_b64.split(",", 1)[1]
+            blob = base64.b64decode(content_b64)
         except Exception as e:
-            logger.warning(f"Skipping file '{getattr(f,'name', '?')}': {e}")
+            logger.warning(f"Skipping file '{getattr(f,'name', '?')}' (decode error): {e}")
             continue
-    
+        size = f.size or len(blob)
+        if size != len(blob):
+            # Trust actual decoded length
+            size = len(blob)
+        c.execute("""
+            INSERT INTO files (name, type, size, content, uploaded_at, uploaded_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            f.name,
+            f.type or "application/octet-stream",
+            size,
+            sqlite3.Binary(blob),
+            now,
+            uploader_id
+        ))
+        inserted.append(c.lastrowid)
     return inserted
 
 # Historic Directory Endpoints
@@ -3038,4 +2584,3 @@ async def get_historic_statistics(current_user: dict = Depends(get_current_user)
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         conn.close()
-        
