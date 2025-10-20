@@ -1655,135 +1655,31 @@ let historicFilters = {
 async function loadHistoricData(filters = {}) {
     try {
         console.log('📚 Loading historic directory data...');
+        
+        // Build query string from filters
         const queryParams = new URLSearchParams();
         Object.entries(filters).forEach(([key, value]) => {
             if (value) queryParams.append(key, value);
         });
+        
         const [submissions, statistics] = await Promise.all([
             apiCall(`/historic/submissions?${queryParams}`),
             apiCall('/historic/statistics')
         ]);
+        
         historicSubmissions = submissions;
-        // Default to grouped-by-student view
+        // Use grouped-by-student view by default
         renderHistoricDirectoryGrouped();
         renderHistoricStatistics(statistics);
+        
         console.log(`✅ Loaded ${submissions.length} historic submissions`);
+        
     } catch (error) {
         console.error('❌ Error loading historic data:', error);
         showNotification('Failed to load historic directory data', 'error');
     }
 }
 
-function renderHistoricDirectoryGrouped() {
-    const container = document.getElementById('historicDirectoryContent');
-    if (!container) return;
-
-    if (!Array.isArray(historicSubmissions) || historicSubmissions.length === 0) {
-        container.innerHTML = `
-            <div class="empty-state">
-                <div style="font-size: 48px; margin-bottom: 16px;">📊</div>
-                <h3>No Historic Submissions Found</h3>
-                <p>No submissions match your current filters.</p>
-                <button onclick="clearHistoricFilters()" class="ghost">Clear Filters</button>
-            </div>
-        `;
-        return;
-    }
-
-    // Group by username (fallbacks for safety)
-    const byUser = historicSubmissions.reduce((acc, s) => {
-        const key = s.username || s.email || `${s.first_name || ''} ${s.last_name || ''}`.trim() || 'Unknown';
-        if (!acc[key]) {
-            acc[key] = {
-                user: {
-                    username: s.username || '',
-                    first_name: s.first_name || '',
-                    last_name: s.last_name || '',
-                    email: s.email || ''
-                },
-                items: []
-            };
-        }
-        acc[key].items.push(s);
-        return acc;
-    }, {});
-
-    // Sort submissions (newest first) within each student
-    Object.values(byUser).forEach(group => {
-        group.items.sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at));
-    });
-
-    // Sort students alphabetically
-    const groups = Object.values(byUser).sort((a, b) => {
-        const an = `${a.user.last_name} ${a.user.first_name} ${a.user.username}`.toLowerCase();
-        const bn = `${b.user.last_name} ${b.user.first_name} ${b.user.username}`.toLowerCase();
-        return an.localeCompare(bn);
-    });
-
-    const header = `
-        <div class="historic-header">
-            <div class="historic-meta">
-                Showing ${historicSubmissions.length} submission${historicSubmissions.length !== 1 ? 's' : ''}
-                ${historicFilters?.subject_code ? `for ${historicFilters.subject_code}` : ''}
-            </div>
-            <button onclick="exportHistoricData()" class="success">📥 Export Data</button>
-        </div>
-    `;
-
-    const body = `
-        <div class="historic-list">
-            ${groups.map(group => {
-                const fullName = `${group.user.first_name} ${group.user.last_name}`.trim();
-                const displayName = fullName || group.user.username || group.user.email || 'Unknown Student';
-                const subCount = group.items.length;
-                const userIdAttr = group.user.username ? `data-username="${group.user.username}"` : '';
-                return `
-                    <div class="student-group">
-                        <div class="student-header" ${userIdAttr}>
-                            <div>
-                                <strong>${displayName}</strong>
-                                <div class="small">
-                                    ${group.user.username ? `@${group.user.username}` : ''} ${group.user.email ? `• ${group.user.email}` : ''}
-                                </div>
-                            </div>
-                            <div class="badge">${subCount} submission${subCount !== 1 ? 's' : ''}</div>
-                        </div>
-                        <div class="student-submissions" style="display:none;">
-                            ${group.items.map(item => `
-                                <div class="submission-row" data-submission-id="${item.id}">
-                                    <div class="submission-title">
-                                        ${new Date(item.submitted_at).toLocaleString()}
-                                    </div>
-                                    <div class="submission-meta">
-                                        ${item.subject_code} • ${item.assignment_name} • 
-                                        Status: <span class="status-badge ${item.status}">${item.status}</span> •
-                                        ${item.score !== null ? `Score: ${item.score}/${item.max_points}` : 'Not graded'}
-                                    </div>
-                                    ${item.feedback ? `<div class="submission-feedback">${item.feedback}</div>` : ''}
-                                    <div class="submission-actions">
-                                        <button onclick="viewSubmissionDetails(${item.id})" class="ghost">View Details</button>
-                                        ${item.status !== 'graded' ? `<button onclick="gradeSubmission(${item.id})" class="success">Grade</button>` : ''}
-                                    </div>
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                `;
-            }).join('')}
-        </div>
-    `;
-
-    container.innerHTML = header + body;
-
-    // Expand/collapse per-student groups
-    container.querySelectorAll('.student-header').forEach(h => {
-        h.addEventListener('click', () => {
-            const body = h.nextElementSibling;
-            const isHidden = !body || body.style.display === 'none' || body.style.display === '';
-            if (body) body.style.display = isHidden ? 'block' : 'none';
-        });
-    });
-}
 
 function renderHistoricDirectoryGrouped() {
     const container = document.getElementById('historicDirectoryContent');
