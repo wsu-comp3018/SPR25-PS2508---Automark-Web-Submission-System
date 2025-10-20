@@ -206,6 +206,11 @@ def main():
         print(f"👤 Author: {commit_info['author']}")
         print(f"💬 Message: {commit_info['message']}")
         
+        # CRITICAL: Only process student commits, not admin commits
+        if commit_info['author'] == 'admin':
+            print("ℹ️  Admin commit detected - skipping sandbox execution")
+            sys.exit(0)  # Not an error, just not a student submission
+        
         # Parse the SVN path to determine assignment
         assignment_info = parse_svn_path(repo_path, revision)
         if not assignment_info:
