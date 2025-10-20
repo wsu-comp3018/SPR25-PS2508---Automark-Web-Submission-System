@@ -745,45 +745,6 @@ def health_check():
 def ping():
     return {"pong": True}
 
-@app.get("/api/v1/submissions/{submission_id}/artifacts")
-def get_submission_artifacts(submission_id: int, current_user: dict = Depends(get_current_user)):
-    """
-    Return stored artifacts (result_json and runner_log) for a submission.
-    Security:
-      - Students: only their own
-      - Lecturers: only for folders they own
-    """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    try:
-        c.execute("SELECT * FROM submissions WHERE id = ?", (submission_id,))
-        row = c.fetchone()
-        if not row:
-            raise HTTPException(404, "Submission not found")
-        sub = dict(row)
-
-        # AuthZ checks
-        if current_user["role"] == "student":
-            if sub["student_id"] != current_user["id"]:
-                raise HTTPException(403, "Forbidden")
-        elif current_user["role"] == "lecturer":
-            c.execute("SELECT lecturer_id FROM folders WHERE id = ?", (sub["folder_id"],))
-            owner = c.fetchone()
-            if not owner or owner[0] != current_user["id"]:
-                raise HTTPException(403, "Forbidden")
-        else:
-            raise HTTPException(403, "Forbidden")
-
-        # Return as-is; frontend can prettify JSON
-        return {
-            "submission_id": submission_id,
-            "result_json": sub.get("result_json"),
-            "runner_log": sub.get("runner_log"),
-        }
-    finally:
-        conn.close()
-        
 @app.get("/api/v1/users/public")
 async def get_all_users_public():
     """Get all registered users (public access - read only)"""
@@ -986,69 +947,6 @@ def login(body: LoginIn):
 # --- Small helpers (added) ---
 def _dict_rows(c: sqlite3.Cursor) -> List[dict]:
     return [dict(r) for r in c.fetchall()]
-def _ensure_submission_result_columns():
-    """Ensure submissions table has result_json and runner_log columns (runtime safe)."""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("PRAGMA table_info(submissions);")
-        cols = {r[1] for r in c.fetchall()}
-        to_add = []
-        if "result_json" not in cols:
-            to_add.append(("result_json", "TEXT"))
-        if "runner_log" not in cols:
-            to_add.append(("runner_log", "TEXT"))
-        for name, typ in to_add:
-            try:
-                c.execute(f"ALTER TABLE submissions ADD COLUMN {name} {typ}")
-                conn.commit()
-                logger.info(f"Added missing column {name} to submissions")
-            except sqlite3.OperationalError as e:
-                logger.warning(f"Could not add column {name} (maybe race condition): {e}")
-    except Exception as e:
-        logger.error(f"_ensure_submission_result_columns failed: {e}")
-    finally:
-        try: conn.close()
-        except: pass
-
-
-# --- In _process_svn_job_results(...), after reading result.json and before committing ---
-        # Ensure DB has result columns
-        _ensure_submission_result_columns()
-
-        # Load runner log (best-effort)
-        runner_log_text = None
-        log_path = results_dir / "runner.log"
-        try:
-            if log_path.exists():
-                runner_log_text = log_path.read_text(encoding="utf-8", errors="replace")
-                # Optional: truncate very large logs
-                if len(runner_log_text) > 200_000:
-                    runner_log_text = runner_log_text[:200_000] + "\n...[truncated]..."
-        except Exception as e:
-            logger.warning(f"Could not read runner.log: {e}")
-
-        # Serialize result.json content for storage
-        raw_result_json = None
-        try:
-            if result_file.exists():
-                raw_result_json = result_file.read_text(encoding="utf-8", errors="replace")
-        except Exception as e:
-            logger.warning(f"Could not read raw result.json: {e}")
-
-        # Create or update submission (existing code) ...
-        # After we compute submission_id (in both branches), persist artifacts:
-        # Update existing submission
-            c.execute("""
-                UPDATE submissions 
-                SET score = ?, feedback = ?, status = ?, graded_at = ?, result_json = ?, runner_log = ?
-                WHERE id = ?
-            """, (score, feedback, status, now, raw_result_json, runner_log_text, existing_sub[0]))
-        # Create new submission
-            c.execute("""
-                INSERT INTO submissions (folder_id, student_id, submitted_at, score, feedback, status, graded_at, revisions, result_json, runner_log)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-            """, (folder_id, student_id, now, score, feedback, status, now, raw_result_json, runner_log_text))
 
 def _ensure_lecturer(current_user: dict):
     if current_user.get("role") != "lecturer":
@@ -3038,4 +2936,3 @@ async def get_historic_statistics(current_user: dict = Depends(get_current_user)
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         conn.close()
-        

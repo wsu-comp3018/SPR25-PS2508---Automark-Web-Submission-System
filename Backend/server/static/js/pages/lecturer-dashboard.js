@@ -2081,97 +2081,43 @@ function convertToCSV(data) {
 }
 
 // View submission details
-async function viewSubmissionDetails(submissionId) {
-    try {
-        // Find base submission metadata from already loaded historicSubmissions
-        const submission = historicSubmissions.find(s => s.id === submissionId);
-        if (!submission) {
-            showNotification('Submission not found', 'error');
-            return;
-        }
+function viewSubmissionDetails(submissionId) {
+    const submission = historicSubmissions.find(s => s.id === submissionId);
+    if (!submission) {
+        showNotification('Submission not found', 'error');
+        return;
+    }
+    
+    
+    const details = `
+        Student: ${submission.first_name} ${submission.last_name} (${submission.email})
+        Assignment: ${submission.assignment_name}
+        Subject: ${submission.subject_code}
+        Submitted: ${new Date(submission.submitted_at).toLocaleString()}
+        ${submission.score !== null ? `Score: ${submission.score}/${submission.max_points}` : 'Not graded yet'}
+        Status: ${submission.status}
+        ${submission.feedback ? `Feedback: ${submission.feedback}` : ''}
+    `;
+    
+    alert(details);
+}
 
-        // Fetch artifacts lazily from backend (stored in DB)
-        const artifacts = await apiCall(`/submissions/${submissionId}/artifacts`);
-        let prettyJson = '';
-        try {
-            if (artifacts.result_json) {
-                const parsed = JSON.parse(artifacts.result_json);
-                prettyJson = JSON.stringify(parsed, null, 2);
-            }
-        } catch {
-            prettyJson = artifacts.result_json || '';
-        }
-
-        const logText = artifacts.runner_log || '';
-
-        // Render in a modal instead of alert()
-        openSubmissionDetailsModal({
-            submission,
-            resultJson: prettyJson,
-            runnerLog: logText
+// Initialize historic directory
+function initializeHistoricDirectory() {
+    // This will be called when the historic directory tab is opened
+    loadHistoricData();
+    
+    // Populate subject filter
+    const subjectFilter = document.getElementById('historicSubjectFilter');
+    if (subjectFilter) {
+        subjectFilter.innerHTML = '<option value="">All Subjects</option>';
+        lecturerSubjects.forEach(subject => {
+            const option = document.createElement('option');
+            option.value = subject.code;
+            option.textContent = `${subject.code} - ${subject.name}`;
+            subjectFilter.appendChild(option);
         });
-    } catch (error) {
-        console.error('Failed to load submission details:', error);
-        showNotification('Failed to load submission details', 'error');
     }
 }
-function openSubmissionDetailsModal({ submission, resultJson, runnerLog }) {
-    let modal = document.getElementById('submissionDetailsModal');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'submissionDetailsModal';
-        modal.className = 'modal';
-        modal.innerHTML = `
-            <div class="modal-content panel" style="max-width: 900px;">
-                <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-                    <h3>Submission Details</h3>
-                    <button class="ghost" onclick="closeSubmissionDetailsModal()">Close</button>
-                </div>
-                <div class="section">
-                    <div class="muted">
-                        Student: <strong id="sdm-student"></strong><br/>
-                        Assignment: <span id="sdm-assignment"></span><br/>
-                        Submitted: <span id="sdm-submitted"></span><br/>
-                        Status: <span id="sdm-status" class="status-badge"></span>
-                        <span id="sdm-score"></span>
-                    </div>
-                </div>
-                <div class="section">
-                    <h4>Result JSON</h4>
-                    <pre id="sdm-result" style="background:#0b1021;color:#d1e7ff;padding:10px;border-radius:8px;max-height:260px;overflow:auto;"></pre>
-                </div>
-                <div class="section">
-                    <h4>Runner Log</h4>
-                    <pre id="sdm-log" style="background:#0b1021;color:#d1e7ff;padding:10px;border-radius:8px;max-height:260px;overflow:auto;"></pre>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modal);
-    }
 
-    // Populate
-    document.getElementById('sdm-student').textContent =
-        `${submission.first_name} ${submission.last_name} (${submission.username})`;
-    document.getElementById('sdm-assignment').textContent =
-        `${submission.subject_code} • ${submission.assignment_name}`;
-    document.getElementById('sdm-submitted').textContent =
-        new Date(submission.submitted_at).toLocaleString();
-    const statusEl = document.getElementById('sdm-status');
-    statusEl.textContent = submission.status;
-    statusEl.className = `status-badge ${submission.status}`;
-    document.getElementById('sdm-score').textContent =
-        submission.score !== null ? ` • Score: ${submission.score}/${submission.max_points}` : '';
 
-    document.getElementById('sdm-result').textContent = resultJson || '(No result.json saved)';
-    document.getElementById('sdm-log').textContent = runnerLog || '(No runner.log saved)';
-
-    modal.style.display = 'block';
-}
-function closeSubmissionDetailsModal() {
-    const modal = document.getElementById('submissionDetailsModal');
-    if (modal) modal.style.display = 'none';
-}
-
-// Expose close function
-window.closeSubmissionDetailsModal = closeSubmissionDetailsModal;
-// Close modal
