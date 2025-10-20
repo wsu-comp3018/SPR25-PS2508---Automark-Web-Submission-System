@@ -1757,7 +1757,7 @@ function renderHistoricDirectoryGrouped() {
                                 ${subCount} submission${subCount !== 1 ? 's' : ''}
                             </div>
                         </div>
-                        <div class="student-submissions" style="display:none;padding-left:8px;margin-left:8px;border-left:3px solid #eaeaea;">
+                        <div class="student-submissions hidden">
                             ${group.items.map(item => `
                                 <div class="submission-row" data-submission-id="${item.id}" style="padding:10px 8px;border-bottom:1px solid #f0f0f0;">
                                     <div class="submission-title" style="font-weight:600;">
