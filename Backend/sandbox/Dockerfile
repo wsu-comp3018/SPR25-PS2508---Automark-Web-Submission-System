@@ -16,5 +16,5 @@ USER runner
 # Make Python quiet & unbuffered
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
-# Run the job
-ENTRYPOINT ["python", "run.py"]
+# Default command (can be overridden)
+CMD ["python", "run.py"]
