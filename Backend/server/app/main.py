@@ -871,9 +871,14 @@ def register(body: RegisterIn):
         if ssh_result["success"]:
             logger.info(f"SSH user created for {body.username}: {ssh_result['message']}")
         else:
+            # Don't fail registration if SSH creation fails for lecturers
             logger.warning(f"SSH user creation failed for {body.username}: {ssh_result.get('error', 'Unknown error')}")
+            if body.role == "student":
+                
+                pass
     except Exception as e:
         logger.error(f"Error creating SSH user for {body.username}: {e}")
+        # Don't raise exception - allow registration to succeed even if SSH fails
 
     return RegisterOut(
         id=row[0], username=row[1], email=row[2], role=row[3],
@@ -2811,6 +2816,7 @@ async def get_historic_submissions(
     current_user: dict = Depends(get_current_user),
     subject_code: Optional[str] = None,
     student_id: Optional[int] = None,
+    student_search: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     status: Optional[str] = None
@@ -2852,6 +2858,11 @@ async def get_historic_submissions(
         if student_id:
             query += " AND s.student_id = ?"
             params.append(student_id)
+        
+        if student_search:
+            query += " AND (u.first_name LIKE ? OR u.last_name LIKE ? OR u.email LIKE ? OR u.username LIKE ?)"
+            search_term = f"%{student_search}%"
+            params.extend([search_term, search_term, search_term, search_term])
             
         if date_from:
             query += " AND s.submitted_at >= ?"
@@ -2931,6 +2942,146 @@ async def get_historic_statistics(current_user: dict = Depends(get_current_user)
             "average_score": round(avg_score, 2),
             "submissions_by_subject": subject_counts
         }
+        
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+
+@app.get("/api/v1/assignments/{assignment_id}/csv")
+async def generate_assignment_csv(assignment_id: int, current_user: dict = Depends(get_current_user)):
+    """Generate CSV for a specific assignment with highest scores"""
+    if current_user["role"] != "lecturer":
+        raise HTTPException(status_code=403, detail="Only lecturers can generate CSV reports")
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        # Verify assignment belongs to lecturer and get assignment info
+        c.execute("""
+            SELECT f.id, f.name, f.subject_code, f.max_points
+            FROM folders f
+            WHERE f.id = ? AND f.lecturer_id = ?
+        """, (assignment_id, current_user["id"]))
+        
+        assignment = c.fetchone()
+        if not assignment:
+            raise HTTPException(status_code=404, detail="Assignment not found")
+        
+        # Get highest scores for each student (auto-updates when higher scores are submitted)
+        c.execute("""
+            SELECT 
+                u.username,
+                u.first_name,
+                u.last_name,
+                u.email,
+                MAX(s.score) as highest_score,
+                MAX(s.submitted_at) as latest_submission,
+                COUNT(s.id) as submission_count
+            FROM submissions s
+            JOIN users u ON s.student_id = u.id
+            WHERE s.folder_id = ?
+            GROUP BY u.id
+            ORDER BY highest_score DESC, u.username
+        """, (assignment_id,))
+        
+        submissions = c.fetchall()
+        
+        # Generate CSV content
+        import csv
+        import io
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        writer.writerow([
+            'Username', 'First Name', 'Last Name', 'Email', 
+            'Highest Score', 'Max Points', 'Latest Submission', 'Submission Count'
+        ])
+        
+        # Write data rows
+        for sub in submissions:
+            writer.writerow([
+                sub['username'],
+                sub['first_name'],
+                sub['last_name'],
+                sub['email'],
+                sub['highest_score'] or 0,  # Handle NULL scores
+                assignment['max_points'],
+                sub['latest_submission'],
+                sub['submission_count']
+            ])
+        
+        csv_content = output.getvalue()
+        output.close()
+        
+        # Generate filename: subjectcode_assignmentname.csv
+        filename = f"{assignment['subject_code']}_{assignment['name'].replace(' ', '_')}.csv"
+        
+        return {
+            "csv_content": csv_content,
+            "filename": filename,
+            "assignment_name": assignment['name'],
+            "subject_code": assignment['subject_code'],
+            "student_count": len(submissions),
+            "generated_at": now_iso()
+        }
+        
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+@app.get("/api/v1/assignments/{assignment_id}/csv/download")
+async def download_assignment_csv(assignment_id: int, current_user: dict = Depends(get_current_user)):
+    """Download CSV for a specific assignment"""
+    # Reuse the generation function
+    result = await generate_assignment_csv(assignment_id, current_user)
+    
+    from fastapi.responses import Response
+    return Response(
+        content=result["csv_content"],
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename={result['filename']}",
+            "Content-Type": "text/csv; charset=utf-8"
+        }
+    )
+
+@app.get("/api/v1/lecturer/assignments")
+async def get_lecturer_assignments(current_user: dict = Depends(get_current_user)):
+    """Get all assignments for the current lecturer (for CSV download UI)"""
+    if current_user["role"] != "lecturer":
+        raise HTTPException(status_code=403, detail="Only lecturers can access assignments")
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        c.execute("""
+            SELECT 
+                f.id,
+                f.name,
+                f.subject_code,
+                f.max_points,
+                f.created_at,
+                COUNT(DISTINCT s.id) as submission_count,
+                COUNT(DISTINCT fa.student_id) as assigned_students_count
+            FROM folders f
+            LEFT JOIN submissions s ON f.id = s.folder_id
+            LEFT JOIN folder_assignments fa ON f.id = fa.folder_id
+            WHERE f.lecturer_id = ?
+            GROUP BY f.id
+            ORDER BY f.created_at DESC
+        """, (current_user["id"],))
+        
+        assignments = c.fetchall()
+        return [dict(assignment) for assignment in assignments]
         
     except sqlite3.Error as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")

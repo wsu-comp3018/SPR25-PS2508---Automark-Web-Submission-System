@@ -873,3 +873,80 @@ button.export-btn:hover {
     100% { transform: rotate(360deg); }
 }
 
+/* CSV Section Styling */
+.csv-section {
+    border-top: 1px solid #eee;
+    padding-top: 12px;
+    margin-top: 8px;
+}
+
+.csv-section .small {
+    margin-bottom: 8px;
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 12px;
+}
+
+/* CSV Button specific styles */
+.actions button.csv-btn {
+    background: linear-gradient(135deg, #27ae60, #229954);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 10px;
+    font-size: 12px;
+    border: none;
+    color: white;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.actions button.csv-btn:hover {
+    background: linear-gradient(135deg, #229954, #27ae60);
+    transform: translateY(-1px);
+}
+
+.actions button.csv-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.actions button.csv-btn.loading {
+    position: relative;
+    color: transparent;
+}
+
+.actions button.csv-btn.loading::after {
+    content: '';
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    border: 2px solid transparent;
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: button-loading-spinner 1s ease infinite;
+}
+
+@keyframes button-loading-spinner {
+    from { transform: translate(-50%, -50%) rotate(0turn); }
+    to { transform: translate(-50%, -50%) rotate(1turn); }
+}
+
+/* Responsive adjustments for CSV buttons */
+@media (max-width: 768px) {
+    .actions button.csv-btn {
+        flex: 1;
+        min-width: 60px;
+        font-size: 11px;
+        padding: 4px 8px;
+    }
+    
+    .csv-section {
+        padding-top: 10px;
+    }
+}

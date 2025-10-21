@@ -3,6 +3,17 @@
 // Add debug logging
 console.log('🚀 Lecturer dashboard script loaded');
 
+// global error handler
+window.addEventListener('error', function(e) {
+    console.error('🛑 Global JavaScript Error:', e.error);
+    console.error('🛑 Error at:', e.filename, 'line:', e.lineno);
+});
+
+// unhandled promise rejection handler
+window.addEventListener('unhandledrejection', function(e) {
+    console.error('🛑 Unhandled Promise Rejection:', e.reason);
+});
+
 // Check if running in browser
 if (typeof window === 'undefined') {
     console.error('❌ Script not running in browser context');
@@ -267,12 +278,21 @@ let removedLecturerFileIds = [];
                 // Check results
                 if (students.status === 'rejected') {
                     console.error('❌ Failed to load students:', students.reason);
+                } else if (students.value.length === 0) {
+                    console.warn('⚠️ No students found in the system');
                 }
+                
                 if (folders.status === 'rejected') {
                     console.error('❌ Failed to load folders:', folders.reason);
+                } else if (folders.value.length === 0) {
+                    console.warn('⚠️ No assignments found - this is normal for new accounts');
+                    showNotification('No assignments found. Create your first assignment!', 'info');
                 }
+                
                 if (submissions.status === 'rejected') {
                     console.error('❌ Failed to load submissions:', submissions.reason);
+                } else if (submissions.value.length === 0) {
+                    console.log('ℹ️ No submissions yet - students need to submit work');
                 }
                 
                 console.log('📊 Data loading summary:');
@@ -285,6 +305,7 @@ let removedLecturerFileIds = [];
                 renderFolderList();
                 updateStatistics();
                 populateCreateAssignmentModal();
+                refreshCSVDropdown();
                 
                 console.log('✅ All data loaded and UI updated');
                 
@@ -408,7 +429,7 @@ let removedLecturerFileIds = [];
             console.log('✅ Folder list rendered successfully');
         }
 
-       function createAssignmentElement(assignment) {
+function createAssignmentElement(assignment) {
     const assignmentDiv = document.createElement('div');
     assignmentDiv.className = 'folder';
     assignmentDiv.dataset.assignmentId = assignment.id;
@@ -440,6 +461,10 @@ let removedLecturerFileIds = [];
             </button>
             <button onclick="viewSubmissions(${assignment.id})" class="ghost" title="View Submissions">
                 📄 ${submissionCount}
+            </button>
+            <button onclick="downloadAssignmentCSV(${assignment.id}, event)" class="csv-btn" 
+                    title="Download CSV with highest scores">
+                📊 CSV
             </button>
             <button onclick="deleteAssignment(${assignment.id})" class="danger" title="Delete Assignment">
                 🗑️ Delete
@@ -755,33 +780,50 @@ let removedLecturerFileIds = [];
         }
 
         // Modal functions
-       function closeModal(modalId) {
+function closeModal(modalId) {
     const modal = $(modalId);
     if (modal) {
         modal.style.display = 'none';
         
-        // If this was the edit modal, reset it
-        if (modalId === 'createAssignmentModal' && currentEditingAssignment) {
-            closeEditModal();
-            return;
+        // Reset edit mode if this is the assignment modal
+        if (modalId === 'createAssignmentModal') {
+            if (currentEditingAssignment) {
+                closeEditModal();
+            } else {
+                // Clear form for create mode
+                resetAssignmentForm();
+            }
         }
         
-        // Clear form data for create mode
-        const inputs = modal.querySelectorAll('input, textarea, select');
-        inputs.forEach(input => {
-            if (input.type === 'checkbox') {
-                input.checked = false;
-            } else if (input.type === 'file') {
-                input.value = '';
-            } else {
-                input.value = '';
-            }
-        });
-
-        // Clear selected files
+        // Clear file selections
         selectedAssignmentFiles = [];
         updateAssignmentFileList();
     }
+}
+
+function resetAssignmentForm() {
+    const form = document.getElementById('createAssignmentModal');
+    if (!form) return;
+    
+    const inputs = form.querySelectorAll('input, textarea, select');
+    inputs.forEach(input => {
+        if (input.type === 'checkbox') {
+            input.checked = false;
+        } else if (input.type === 'file') {
+            input.value = '';
+        } else if (input.type !== 'button') {
+            input.value = '';
+        }
+    });
+    
+    // Hide existing files section
+    const existingFiles = $('existingLecturerFiles');
+    if (existingFiles) existingFiles.style.display = 'none';
+    
+    // Reset edit mode variables
+    currentEditingAssignment = null;
+    existingLecturerFiles = [];
+    removedLecturerFileIds = [];
 }
 
 // Make functions available globally
@@ -849,6 +891,24 @@ window.deleteAssignment = deleteAssignment;
                 });
             }
             
+            // Historic Directory Button
+            const historicDirBtn = $('openHistoricDirectory');
+            if (historicDirBtn) {
+                historicDirBtn.addEventListener('click', () => {
+                    console.log('📊 Historic Directory button clicked');
+                    initializeHistoricDirectory();
+                    const modal = $('historicDirectoryModal');
+                    if (modal) {
+                        modal.style.display = 'flex';
+                        console.log('✅ Historic Directory modal opened');
+                    } else {
+                        console.error('❌ Historic Directory modal not found');
+                    }
+                });
+            }
+
+            setupBulkCSVDownload();
+
             // Modal close buttons
             const cancelAssignmentBtn = $('cancelAssignmentBtn');
             if (cancelAssignmentBtn) {
@@ -941,6 +1001,7 @@ window.deleteAssignment = deleteAssignment;
         window.clearHistoricFilters = clearHistoricFilters;
         window.exportHistoricData = exportHistoricData;
         window.viewSubmissionDetails = viewSubmissionDetails;
+        window.downloadAssignmentCSV = downloadAssignmentCSV;
 
         // Close modal when clicking outside
         window.onclick = function(event) {
@@ -1049,15 +1110,9 @@ async function enrollSelectedStudents() {
 }
 
 // Initialize when DOM is loaded
+// Replace the current DOMContentLoaded event listener with this:
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('📄 DOM Content Loaded - Lecturer dashboard initializing...');
-    
-    // Add immediate visual feedback
-    const body = document.body;
-    if (body) {
-        body.style.opacity = '0.5';
-        console.log('✅ Body element found, setting loading state');
-    }
     
     try {
         // Check authentication first
@@ -1072,65 +1127,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         // Update UI with user info
         const lecturerNameEl = $('lecturerName');
-        if (lecturerNameEl) {
+        if (lecturerNameEl && currentUser) {
             const displayName = currentUser.firstName || currentUser.username || 'Lecturer';
             lecturerNameEl.textContent = `Hi, ${displayName}`;
-            console.log('✅ Updated lecturer name display');
         }
         
-        // Setup event listeners
+        // Setup event listeners AFTER basic DOM is ready
         console.log('🔧 Step 2: Setting up event listeners...');
         setupEventListeners();
-        console.log('✅ Event listeners setup complete');
         
         // Load all data
         console.log('📊 Step 3: Loading dashboard data...');
         await loadAllData();
-        console.log('✅ Data loading complete');
         
         console.log('🎉 Lecturer dashboard initialized successfully');
         
     } catch (error) {
         console.error('❌ Error initializing dashboard:', error);
-        
-        // Show detailed error information
         showNotification(`Dashboard initialization failed: ${error.message}`, 'error');
-        
-        // Show error state with more details
-        if (body) {
-            body.innerHTML = `
-                <div style="padding: 40px; text-align: center; max-width: 600px; margin: 0 auto;">
-                    <h2 style="color: #e74c3c; margin-bottom: 20px;">Dashboard Loading Error</h2>
-                    <p style="margin-bottom: 20px; color: #666;">
-                        There was an error loading the lecturer dashboard. This could be due to:
-                    </p>
-                    <ul style="text-align: left; margin: 20px 0; color: #666;">
-                        <li>Network connectivity issues</li>
-                        <li>Server unavailable</li>
-                        <li>Authentication problems</li>
-                        <li>Database connection issues</li>
-                    </ul>
-                    <div style="margin: 20px 0;">
-                        <strong>Error details:</strong><br>
-                        <code style="background: #f8f9fa; padding: 8px; border-radius: 4px; display: inline-block; margin-top: 8px;">
-                            ${error.message}
-                        </code>
-                    </div>
-                    <div style="margin-top: 30px;">
-                        <button onclick="location.reload()" style="margin-right: 10px;">Reload Page</button>
-                        <button onclick="logout()" class="ghost">Back to Login</button>
-                    </div>
-                </div>
-            `;
-        }
-        
-    } finally {
-        // Always remove loading state
-        if (body) {
-            body.style.opacity = '1';
-        }
     }
 });
+
+
         // Define deleteAssignment function BEFORE it's referenced
         async function deleteAssignment(assignmentId) {
             console.log('🗑️ Delete assignment called for ID:', assignmentId);
@@ -1654,7 +1672,7 @@ let historicFilters = {
 // Load historic data
 async function loadHistoricData(filters = {}) {
     try {
-        console.log('📚 Loading historic directory data...');
+        console.log('📚 Loading historic directory data with filters:', filters);
         
         // Build query string from filters
         const queryParams = new URLSearchParams();
@@ -1668,8 +1686,7 @@ async function loadHistoricData(filters = {}) {
         ]);
         
         historicSubmissions = submissions;
-        // Use grouped-by-student view by default
-        renderHistoricDirectoryGrouped();
+        renderHistoricDirectory();
         renderHistoricStatistics(statistics);
         
         console.log(`✅ Loaded ${submissions.length} historic submissions`);
@@ -1680,121 +1697,6 @@ async function loadHistoricData(filters = {}) {
     }
 }
 
-function renderHistoricDirectoryGrouped() {
-    const container = document.getElementById('historicDirectoryContent');
-    if (!container) return;
-    
-    if (!Array.isArray(historicSubmissions) || historicSubmissions.length === 0) {
-        container.innerHTML = `
-            <div class="empty-state">
-                <div style="font-size: 48px; margin-bottom: 16px;">📊</div>
-                <h3>No Historic Submissions Found</h3>
-                <p>No submissions match your current filters.</p>
-                <button onclick="clearHistoricFilters()" class="ghost">Clear Filters</button>
-            </div>
-        `;
-        return;
-    }
-
-    // Group submissions by student username
-    const byUser = historicSubmissions.reduce((acc, s) => {
-        const key = s.username || s.email || `${s.first_name || ''} ${s.last_name || ''}`.trim() || 'Unknown';
-        if (!acc[key]) {
-            acc[key] = {
-                user: {
-                    username: s.username || '',
-                    first_name: s.first_name || '',
-                    last_name: s.last_name || '',
-                    email: s.email || ''
-                },
-                items: []
-            };
-        }
-        acc[key].items.push(s);
-        return acc;
-    }, {});
-
-    // Sort each student's submissions by submitted_at desc
-    Object.values(byUser).forEach(group => {
-        group.items.sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at));
-    });
-
-    const groups = Object.values(byUser).sort((a, b) => {
-        // Sort student groups alphabetically by last_name, then first_name, then username
-        const an = `${a.user.last_name} ${a.user.first_name} ${a.user.username}`.toLowerCase();
-        const bn = `${b.user.last_name} ${b.user.first_name} ${b.user.username}`.toLowerCase();
-        return an.localeCompare(bn);
-    });
-
-    const header = `
-        <div class="historic-header">
-            <div class="historic-meta">
-                Showing ${historicSubmissions.length} submission${historicSubmissions.length !== 1 ? 's' : ''}
-                ${historicFilters?.subject_code ? `for ${historicFilters.subject_code}` : ''}
-            </div>
-            <button onclick="exportHistoricData()" class="success">📥 Export Data</button>
-        </div>
-    `;
-
-    const body = `
-        <div class="historic-list">
-            ${groups.map(group => {
-                const fullName = `${group.user.first_name} ${group.user.last_name}`.trim();
-                const displayName = fullName || group.user.username || group.user.email || 'Unknown Student';
-                const subCount = group.items.length;
-                const userIdAttr = group.user.username ? `data-username="${group.user.username}"` : '';
-                return `
-                    <div class="student-group">
-                        <div class="student-header" ${userIdAttr} style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:1px solid #e0e0e0;border-radius:6px;background:#fafafa;margin:10px 0;">
-                            <div>
-                                <strong>${displayName}</strong>
-                                <div class="small" style="color:#666;">
-                                    ${group.user.username ? `@${group.user.username}` : ''} ${group.user.email ? `• ${group.user.email}` : ''}
-                                </div>
-                            </div>
-                            <div class="badge" style="background:#eee;border-radius:12px;padding:4px 10px;">
-                                ${subCount} submission${subCount !== 1 ? 's' : ''}
-                            </div>
-                        </div>
-                        <div class="student-submissions" style="display:none;padding-left:8px;margin-left:8px;border-left:3px solid #eaeaea;">
-                            ${group.items.map(item => `
-                                <div class="submission-row" data-submission-id="${item.id}" style="padding:10px 8px;border-bottom:1px solid #f0f0f0;">
-                                    <div class="submission-title" style="font-weight:600;">
-                                        ${new Date(item.submitted_at).toLocaleString()}
-                                    </div>
-                                    <div class="submission-meta small" style="color:#555;margin-top:2px;">
-                                        ${item.subject_code} • ${item.assignment_name} • 
-                                        Status: <span class="status-badge ${item.status}">${item.status}</span> •
-                                        ${item.score !== null ? `Score: ${item.score}/${item.max_points}` : 'Not graded'}
-                                    </div>
-                                    ${item.feedback ? `<div class="submission-feedback" style="margin-top:6px;">${item.feedback}</div>` : ''}
-                                    <div class="submission-actions" style="margin-top:8px;">
-                                        <button onclick="viewSubmissionDetails(${item.id})" class="ghost">View Details</button>
-                                        ${item.status !== 'graded' ? `<button onclick="gradeSubmission(${item.id})" class="success">Grade</button>` : ''}
-                                    </div>
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                `;
-            }).join('')}
-        </div>
-    `;
-
-    const html = header + body;
-    container.innerHTML = html;
-
-    // Wire up expand/collapse
-    container.querySelectorAll('.student-header').forEach(h => {
-        h.addEventListener('click', () => {
-            const body = h.nextElementSibling;
-            const isHidden = !body || body.style.display === 'none' || body.style.display === '';
-            if (body) body.style.display = isHidden ? 'block' : 'none';
-        });
-    });
-}
-
-// Render historic directory
 function renderHistoricDirectory() {
     const container = document.getElementById('historicDirectoryContent');
     if (!container) return;
@@ -1811,13 +1713,18 @@ function renderHistoricDirectory() {
         return;
     }
     
+    const filterMessage = historicFilters.student_search ? 
+        `Filtered by student: "${historicFilters.student_search}"` : 
+        '';
+    
     container.innerHTML = `
         <div class="historic-header">
             <div class="historic-meta">
                 Showing ${historicSubmissions.length} submission${historicSubmissions.length !== 1 ? 's' : ''}
-                ${historicFilters.subject_code ? `for ${historicFilters.subject_code}` : ''}
+                ${filterMessage ? ` • ${filterMessage}` : ''}
+                ${historicFilters.subject_code ? ` • Subject: ${historicFilters.subject_code}` : ''}
             </div>
-            <button onclick="exportHistoricData()" class="success">
+            <button onclick="exportHistoricData()" class="success export-btn">
                 📥 Export Data
             </button>
         </div>
@@ -1827,7 +1734,7 @@ function renderHistoricDirectory() {
                     <div class="historic-main">
                         <div class="historic-student">
                             <strong>${submission.first_name} ${submission.last_name}</strong>
-                            <span class="small">${submission.email}</span>
+                            <span class="small">${submission.email} (${submission.username})</span>
                         </div>
                         <div class="historic-assignment">
                             <div class="name">${submission.assignment_name}</div>
@@ -1835,6 +1742,7 @@ function renderHistoricDirectory() {
                                 ${submission.subject_code} • 
                                 Submitted: ${new Date(submission.submitted_at).toLocaleString()} •
                                 ${submission.score !== null ? `Score: ${submission.score}/${submission.max_points}` : 'Not graded'}
+                                ${submission.feedback ? ` • Feedback: ${submission.feedback.substring(0, 50)}${submission.feedback.length > 50 ? '...' : ''}` : ''}
                             </div>
                         </div>
                     </div>
@@ -1900,12 +1808,14 @@ function applyHistoricFilters() {
     const statusFilter = document.getElementById('historicStatusFilter')?.value || '';
     const dateFromFilter = document.getElementById('historicDateFrom')?.value || '';
     const dateToFilter = document.getElementById('historicDateTo')?.value || '';
+    const studentSearchFilter = document.getElementById('historicStudentSearch')?.value || '';
     
     historicFilters = {
         subject_code: subjectFilter,
         status: statusFilter,
         date_from: dateFromFilter,
-        date_to: dateToFilter
+        date_to: dateToFilter,
+        student_search: studentSearchFilter  // NEW: Student search parameter
     };
     
     loadHistoricData(historicFilters);
@@ -2014,5 +1924,143 @@ function initializeHistoricDirectory() {
         });
     }
 }
+
+// CSV Download Functions
+async function downloadAssignmentCSV(assignmentId, event = null) {
+    const button = event?.target || document.querySelector(`[onclick="downloadAssignmentCSV(${assignmentId})"]`);
+    
+    try {
+        console.log(`📊 Downloading CSV for assignment ${assignmentId}`);
+        
+        // Show loading state
+        if (button) {
+            const originalText = button.textContent;
+            button.textContent = '⏳...';
+            button.disabled = true;
+            button.classList.add('loading');
+        }
+        
+        // Call the CSV download endpoint
+        const response = await fetch(`${API_BASE}/assignments/${assignmentId}/csv/download`, {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+        
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || `Failed to download CSV: ${response.status}`);
+        }
+        
+        // Get filename from response headers
+        const contentDisposition = response.headers.get('Content-Disposition');
+        let filename = `assignment_${assignmentId}.csv`;
+        if (contentDisposition) {
+            const match = contentDisposition.match(/filename="(.+)"/);
+            if (match) filename = match[1];
+        }
+        
+        // Create download
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        
+        showNotification(`✅ CSV downloaded: ${filename}`, 'success');
+        
+    } catch (error) {
+        console.error('Error downloading CSV:', error);
+        showNotification(`❌ Failed to download CSV: ${error.message}`, 'error');
+    } finally {
+        // Restore button state
+        if (button) {
+            button.textContent = '📊 CSV';
+            button.disabled = false;
+            button.classList.remove('loading');
+        }
+    }
+}
+
+// Bulk CSV download setup
+function setupBulkCSVDownload() {
+    const select = document.getElementById('csvAssignmentSelect');
+    const downloadBtn = document.getElementById('downloadCSVBtn');
+    
+    if (!select || !downloadBtn) {
+        console.warn('Bulk CSV elements not found');
+        return;
+    }
+    
+    // Populate assignment dropdown
+    function populateAssignmentDropdown() {
+        select.innerHTML = '<option value="">Select Assignment to Export</option>';
+        
+        if (!allFolders || allFolders.length === 0) {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'No assignments available';
+            option.disabled = true;
+            select.appendChild(option);
+            return;
+        }
+        
+        allFolders.forEach(folder => {
+            const assignment = allFolders.find(f => f.id === folder.id);
+            const submissionCount = allSubmissions.filter(sub => sub.folder_id === folder.id).length;
+            
+            const option = document.createElement('option');
+            option.value = folder.id;
+            option.textContent = `${folder.subject_code} - ${folder.name} (${submissionCount} submissions)`;
+            option.title = `${folder.description || 'No description'}`;
+            select.appendChild(option);
+        });
+    }
+    
+    // Enable/disable download button
+    select.addEventListener('change', () => {
+        downloadBtn.disabled = !select.value;
+    });
+    
+    // Handle download
+    downloadBtn.addEventListener('click', () => {
+        const assignmentId = select.value;
+        if (assignmentId) {
+            downloadAssignmentCSV(parseInt(assignmentId));
+        }
+    });
+    
+    // Initial population
+    populateAssignmentDropdown();
+}
+
+// Refresh CSV dropdown when data loads
+function refreshCSVDropdown() {
+    if (document.getElementById('csvAssignmentSelect')) {
+        setupBulkCSVDownload();
+    }
+}
+
+// Debug: Check if buttons are clickable
+setTimeout(() => {
+    console.log('🔍 Button status check:');
+    const buttonIds = [
+        'logoutBtn', 'createAssignmentBtn', 'refreshBtn', 'showAllSubs', 
+        'openHistoricDirectory', 'expandAllBtn', 'collapseAllBtn'
+    ];
+    
+    buttonIds.forEach(id => {
+        const btn = $(id);
+        if (btn) {
+            console.log(`✅ ${id}: EXISTS - clickable: ${!btn.disabled}`);
+        } else {
+            console.log(`❌ ${id}: NOT FOUND`);
+        }
+    });
+}, 1000);
 
 
