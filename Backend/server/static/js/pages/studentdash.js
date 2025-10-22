@@ -266,9 +266,6 @@ function buildSubjectAssignmentTree(subjects, folders) {
 /********************
  * Rendering         *
  ********************/
-/********************
- * Rendering         *
- ********************/
 
 async function render() {
   const [subjects, apiFolders, mySubs] = await Promise.all([
