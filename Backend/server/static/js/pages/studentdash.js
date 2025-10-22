@@ -266,6 +266,10 @@ function buildSubjectAssignmentTree(subjects, folders) {
 /********************
  * Rendering         *
  ********************/
+/********************
+ * Rendering         *
+ ********************/
+
 async function render() {
   const [subjects, apiFolders, mySubs] = await Promise.all([
     fetchStudentSubjects(),
@@ -322,12 +326,17 @@ async function render() {
     const points = node.maxPoints ? `${node.maxPoints} pts` : '—';
     const mat = node.fileIds?.length ? `${node.fileIds.length} file(s)` : 'No materials';
 
+    // Always show Best grade (from latest+best_score API), even if history isn't opened
+    const bestGradeHtml = (!node.isSubject && existing && existing.best_score != null)
+      ? `<span class="best-grade">Best: ${existing.best_score}</span>`
+      : (!node.isSubject ? `<span class="best-grade muted">Best: —</span>` : '');
+
     const metaHtml = node.isSubject
       ? `<div class="meta"><span class="status subject">Subject</span> • Expand to see assignments</div>`
       : `<div class="meta">
            <span class="status ${isActive(node) ? 'active' : 'draft'}">${isActive(node) ? 'Active' : 'Draft'}</span>
            ${node.__meAssigned ? '<span class="badge">Assigned to you</span>' : ''}
-           • ${due} • ${points} • Materials: ${mat}
+           • ${due} • ${points} • Materials: ${mat} • ${bestGradeHtml}
          </div>`;
 
     const descHtml = (!node.isSubject && node.description)
