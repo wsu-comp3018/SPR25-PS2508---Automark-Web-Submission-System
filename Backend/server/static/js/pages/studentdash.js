@@ -398,11 +398,38 @@ function renderInlineSubmission(node, existing) {
 
   return `
     <form class="inline-form" data-submission-form="${node.id}" onsubmit="return false;">
-      
       ${late ? `<span class="status late" title="Past due">LATE</span>` : ''}
       ${gradeLine}
+      
+      <!-- Submission History Section -->
+      <div class="submission-history" id="history-${node.id}" style="display: none; margin-top: 12px; padding: 12px; background: #f9f9f9; border-radius: 8px;">
+        <div style="font-weight: 600; margin-bottom: 8px; cursor: pointer;" onclick="toggleSubmissionHistory('${node.id}')">
+          📝 Submission History
+        </div>
+        <div id="history-items-${node.id}" class="history-items"></div>
+      </div>
+      <button type="button" onclick="toggleSubmissionHistory('${node.id}')" class="ghost" style="margin-top: 5px; position: absolute; right: 80px;">
+        View Submission History
+      </button>
     </form>
   `;
+}
+
+async function toggleSubmissionHistory(folderId) {
+  const historyDiv = document.getElementById(`history-${folderId}`);
+  if (!historyDiv) return;
+  
+  if (historyDiv.style.display === 'none') {
+    // Load submissions if not already loaded
+    const itemsDiv = document.getElementById(`history-items-${folderId}`);
+    if (itemsDiv && itemsDiv.innerHTML === '') {
+      const submissions = await fetchSVNSubmissions(folderId);
+      itemsDiv.innerHTML = renderSubmissionHistory(submissions);
+    }
+    historyDiv.style.display = 'block';
+  } else {
+    historyDiv.style.display = 'none';
+  }
 }
 
 /********************
@@ -523,3 +550,30 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
+async function fetchSVNSubmissions(folderId) {
+  try {
+    const res = await fetch(`${API_BASE}/student/svn-submissions/${folderId}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+function renderSubmissionHistory(submissions) {
+  if (!submissions || submissions.length === 0) {
+    return '<div class="small" style="color: #999;">No submissions yet</div>';
+  }
+
+  return submissions.map(sub => `
+    <div class="submission-attempt">
+      <span class="attempt-label">Attempt No. ${sub.attempt_number}</span>
+      <span class="submission-date">${new Date(sub.submitted_at).toLocaleString()}</span>
+      ${sub.status === 'graded' ? `<span class="grade">${sub.score} pts</span>` : ''}
+      ${sub.feedback ? `<span class="feedback">${sub.feedback}</span>` : ''}
+    </div>
+  `).join('');
+}

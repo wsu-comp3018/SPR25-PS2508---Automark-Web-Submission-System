@@ -3087,3 +3087,39 @@ async def get_lecturer_assignments(current_user: dict = Depends(get_current_user
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         conn.close()
+@app.get("/api/v1/student/svn-submissions/{folder_id}")
+def get_svn_submissions(
+    folder_id: int, 
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get all SVN submissions (commits) for a student on a specific assignment.
+    Returns submission history organized by attempt number.
+    """
+    if current_user["role"] != "student":
+        raise HTTPException(status_code=403, detail="Only students can access their submissions")
+    
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    
+    try:
+        # Query submissions table for this student and folder
+        c.execute("""
+            SELECT 
+                id, 
+                submitted_at, 
+                status, 
+                score, 
+                feedback,
+                revisions,
+                ROW_NUMBER() OVER (ORDER BY submitted_at ASC) as attempt_number
+            FROM submissions
+            WHERE folder_id = ? AND student_id = ?
+            ORDER BY submitted_at ASC
+        """, (folder_id, current_user["id"]))
+        
+        rows = [dict(r) for r in c.fetchall()]
+        return rows
+    finally:
+        conn.close()
