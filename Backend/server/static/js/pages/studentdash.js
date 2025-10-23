@@ -414,9 +414,6 @@ function renderInlineSubmission(node, existing) {
         </div>
         <div id="history-items-${node.id}" class="history-items"></div>
       </div>
-      <button type="button" onclick="toggleSubmissionHistory('${node.id}')" class="ghost" style="margin-top: 5px; position: absolute; right: 80px;">
-        View Submission History
-      </button>
     </form>
   `;
 }

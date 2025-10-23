@@ -763,11 +763,7 @@ function createAssignmentElement(assignment) {
                             </div>
                             ${submission.status === 'graded' ? '<div class="grade-badge">Graded</div>' : ''}
                         </div>
-                        <div class="actions">
-                            <button onclick="gradeSubmission(${submission.id})" class="success">
-                                ${submission.status === 'graded' ? 'Edit Grade' : 'Grade'}
-                            </button>
-                        </div>
+                    
                     `;
                     submissionsContainer.appendChild(submissionDiv);
                 });
