@@ -331,7 +331,7 @@ async function render() {
          </div>`;
 
     const descHtml = (!node.isSubject && node.description)
-      ? `<div class="small" style="margin-top:4px">${node.description}</div>` : '';
+      ? `<div class="small" style="margin-top:0px">${node.description}</div>` : '';
 
     // Existing submission details (files without content)
     const submittedFilesHtml = existing?.files?.length ? `
@@ -347,7 +347,7 @@ async function render() {
     ` : '';
 
     const submitHtml = node.isSubject
-      ? `<div class="small" style="margin-top:6px;color:#999">Open this subject to view its assignments.</div>`
+      ? `<div class="small" style="margin-top:0px;color:#999">Open this subject to view its assignments.</div>`
       : (node.__meAssigned
           ? (hasChildren
               ? '<div class="small" style="margin-top:6px;color:#999">Submissions are only allowed in the <strong>last child folder</strong>. Open a child folder to submit.</div>'

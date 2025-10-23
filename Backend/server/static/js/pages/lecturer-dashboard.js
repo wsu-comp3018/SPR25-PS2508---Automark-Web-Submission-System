@@ -383,9 +383,6 @@ let removedLecturerFileIds = [];
                         <button onclick="createAssignmentForSubject('${subject.code}')" class="success" title="Create New Assignment">
                             + Assignment
                         </button>
-                        <button onclick="openEnrollStudentsModal(${subject.id})" class="ghost" title="Enroll Students">
-                            Enroll Students
-                        </button>
                         <button onclick="viewSubjectSubmissions('${subject.id}')" class="ghost" title="View All Submissions">
                             ${subjectAssignments.reduce((sum, a) => sum + (allSubmissions.filter(s => s.folder_id === a.id).length), 0)} Submissions
                         </button>
@@ -765,11 +762,6 @@ function createAssignmentElement(assignment) {
                                 </div>
                             </div>
                             ${submission.status === 'graded' ? '<div class="grade-badge">Graded</div>' : ''}
-                        </div>
-                        <div class="actions">
-                            <button onclick="gradeSubmission(${submission.id})" class="success">
-                                ${submission.status === 'graded' ? 'Edit Grade' : 'Grade'}
-                            </button>
                         </div>
                     `;
                     submissionsContainer.appendChild(submissionDiv);
