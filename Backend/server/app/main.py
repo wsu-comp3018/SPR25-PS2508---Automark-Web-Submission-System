@@ -2831,9 +2831,10 @@ async def get_historic_submissions(
     student_search: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    status: Optional[str] = None
+    status: Optional[str] = None,
+    show_all_versions: bool = True  # NEW: Control whether to show all versions
 ):
-    """Get historic submissions with filtering options"""
+    """Get historic submissions with filtering options - shows ALL versions by default"""
     if current_user["role"] != "lecturer":
         raise HTTPException(status_code=403, detail="Only lecturers can access historic data")
     
@@ -2842,7 +2843,7 @@ async def get_historic_submissions(
     c = conn.cursor()
     
     try:
-        # Base query with joins for comprehensive data
+        # Base query with joins for comprehensive data - show ALL submissions
         query = """
             SELECT 
                 s.*,
@@ -2853,7 +2854,12 @@ async def get_historic_submissions(
                 u.last_name,
                 u.username,
                 u.email,
-                subj.name as subject_name
+                subj.name as subject_name,
+                -- Add submission version number for each student+assignment
+                (SELECT COUNT(*) FROM submissions s2 
+                 WHERE s2.student_id = s.student_id 
+                 AND s2.folder_id = s.folder_id 
+                 AND s2.submitted_at <= s.submitted_at) as submission_version
             FROM submissions s
             JOIN folders f ON s.folder_id = f.id
             JOIN users u ON s.student_id = u.id
@@ -2888,17 +2894,38 @@ async def get_historic_submissions(
             query += " AND s.status = ?"
             params.append(status)
         
-        query += " ORDER BY s.submitted_at DESC"
+        # Order by student, assignment, and submission time to group versions together
+        query += " ORDER BY u.last_name, u.first_name, f.name, s.submitted_at DESC"
         
         c.execute(query, params)
         submissions = c.fetchall()
         
-        return [dict(sub) for sub in submissions]
+        result = []
+        for sub in submissions:
+            submission_dict = dict(sub)
+            
+            # Add version information
+            version = submission_dict['submission_version']
+            total_versions_query = """
+                SELECT COUNT(*) as total_versions 
+                FROM submissions 
+                WHERE student_id = ? AND folder_id = ?
+            """
+            c.execute(total_versions_query, (submission_dict['student_id'], submission_dict['folder_id']))
+            total_versions = c.fetchone()['total_versions']
+            
+            submission_dict['version_info'] = f"Version {version} of {total_versions}"
+            submission_dict['is_latest'] = (version == total_versions)
+            
+            result.append(submission_dict)
+        
+        return result
         
     except sqlite3.Error as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         conn.close()
+
 
 @app.get("/api/v1/historic/statistics")
 async def get_historic_statistics(current_user: dict = Depends(get_current_user)):
@@ -3072,11 +3099,18 @@ async def download_assignment_csv(assignment_id: int, current_user: dict = Depen
     result = await generate_assignment_csv(assignment_id, current_user)
     
     from fastapi.responses import Response
+    
+    # Ensure filename is properly formatted and encoded
+    filename = result["filename"]
+    
+    # Debug print to verify filename
+    print(f"📁 Generated filename: {filename}")
+    
     return Response(
         content=result["csv_content"],
         media_type="text/csv",
         headers={
-            "Content-Disposition": f"attachment; filename={result['filename']}",
+            "Content-Disposition": f"attachment; filename=\"{filename}\"",  # Added quotes around filename
             "Content-Type": "text/csv; charset=utf-8"
         }
     )

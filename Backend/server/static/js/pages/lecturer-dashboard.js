@@ -1716,20 +1716,29 @@ function renderHistoricDirectory() {
                 ${filterMessage ? ` • ${filterMessage}` : ''}
                 ${historicFilters.subject_code ? ` • Subject: ${historicFilters.subject_code}` : ''}
             </div>
-            <button onclick="exportHistoricData()" class="success export-btn">
-                📥 Export Data
-            </button>
+            <div style="display: flex; gap: 12px; align-items: center;">
+                <button onclick="exportHistoricData()" class="success export-btn">
+                    📥 Export All Data
+                </button>
+                <button onclick="toggleSubmissionVersions()" class="ghost" id="toggleVersionsBtn">
+                    👁️ Show Latest Only
+                </button>
+            </div>
         </div>
         <div class="historic-list">
             ${historicSubmissions.map(submission => `
-                <div class="historic-item" data-submission-id="${submission.id}">
+                <div class="historic-item ${submission.is_latest ? 'latest-submission' : 'older-version'}" 
+                     data-submission-id="${submission.id}"
+                     data-student-id="${submission.student_id}"
+                     data-folder-id="${submission.folder_id}">
                     <div class="historic-main">
                         <div class="historic-student">
                             <strong>${submission.first_name} ${submission.last_name}</strong>
                             <span class="small">${submission.email} (${submission.username})</span>
+                            ${submission.is_latest ? '<span class="version-badge latest">Latest</span>' : '<span class="version-badge older">Older Version</span>'}
                         </div>
                         <div class="historic-assignment">
-                            <div class="name">${submission.assignment_name}</div>
+                            <div class="name">${submission.assignment_name} • ${submission.version_info}</div>
                             <div class="meta">
                                 ${submission.subject_code} • 
                                 Submitted: ${new Date(submission.submitted_at).toLocaleString()} •
@@ -1748,6 +1757,11 @@ function renderHistoricDirectory() {
                                 Grade
                             </button>
                         ` : ''}
+                        <button onclick="compareWithLatest(${submission.id}, ${submission.student_id}, ${submission.folder_id})" 
+                                class="warning" ${submission.is_latest ? 'disabled' : ''}
+                                title="Compare with latest version">
+                            Compare
+                        </button>
                     </div>
                 </div>
             `).join('')}
@@ -1932,7 +1946,6 @@ async function downloadAssignmentCSV(assignmentId, event = null) {
             button.classList.add('loading');
         }
         
-        // Call the CSV download endpoint
         const response = await fetch(`${API_BASE}/assignments/${assignmentId}/csv/download`, {
             headers: {
                 'Authorization': `Bearer ${authToken}`
@@ -1944,16 +1957,35 @@ async function downloadAssignmentCSV(assignmentId, event = null) {
             throw new Error(errorData.detail || `Failed to download CSV: ${response.status}`);
         }
         
-        // Get filename from response headers
+        // DEBUG: Log all headers
+        console.log('📋 Response headers:', Object.fromEntries([...response.headers]));
+        
+        // Get filename from Content-Disposition header
         const contentDisposition = response.headers.get('Content-Disposition');
-        let filename = `assignment_${assignmentId}.csv`;
+        console.log('📁 Content-Disposition header:', contentDisposition);
+        
+        let filename = `assignment_${assignmentId}.csv`; // fallback
+        
         if (contentDisposition) {
-            const match = contentDisposition.match(/filename="(.+)"/);
-            if (match) filename = match[1];
+            // Try different parsing methods
+            const match1 = contentDisposition.match(/filename="(.+)"/);
+            const match2 = contentDisposition.match(/filename=([^;]+)/);
+            
+            if (match1) {
+                filename = match1[1];
+                console.log('✅ Using filename from quoted pattern:', filename);
+            } else if (match2) {
+                filename = match2[1];
+                console.log('✅ Using filename from unquoted pattern:', filename);
+            }
         }
         
-        // Create download
+        console.log('🎯 Final filename to use:', filename);
+        
+        // Get the blob
         const blob = await response.blob();
+        
+        // Create download
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -2056,3 +2088,91 @@ setTimeout(() => {
 }, 1000);
 
 
+const versionStyles = `
+    .historic-item.latest-submission {
+        border-left: 4px solid #28a745;
+        background-color: #f8fff9;
+    }
+    
+    .historic-item.older-version {
+        border-left: 4px solid #6c757d;
+        background-color: #f8f9fa;
+        opacity: 0.8;
+    }
+    
+    .version-badge {
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: bold;
+        margin-left: 8px;
+    }
+    
+    .version-badge.latest {
+        background-color: #28a745;
+        color: white;
+    }
+    
+    .version-badge.older {
+        background-color: #6c757d;
+        color: white;
+    }
+`;
+
+const styleSheet = document.createElement('style');
+styleSheet.textContent = versionStyles;
+document.head.appendChild(styleSheet);
+
+// Toggle between showing all versions and only latest
+let showAllVersions = true;
+function toggleSubmissionVersions() {
+    showAllVersions = !showAllVersions;
+    const btn = document.getElementById('toggleVersionsBtn');
+    
+    if (showAllVersions) {
+        btn.textContent = '👁️ Show Latest Only';
+        // Show all submissions
+        document.querySelectorAll('.historic-item').forEach(item => {
+            item.style.display = 'flex';
+        });
+    } else {
+        btn.textContent = '👁️ Show All Versions';
+        // Hide older versions, show only latest
+        document.querySelectorAll('.historic-item').forEach(item => {
+            if (item.classList.contains('latest-submission')) {
+                item.style.display = 'flex';
+            } else {
+                item.style.display = 'none';
+            }
+        });
+    }
+}
+
+// Compare function for older versions
+function compareWithLatest(submissionId, studentId, folderId) {
+    const currentSubmission = historicSubmissions.find(s => s.id === submissionId);
+    const latestSubmission = historicSubmissions.find(s => 
+        s.student_id === studentId && 
+        s.folder_id === folderId && 
+        s.is_latest
+    );
+    
+    if (currentSubmission && latestSubmission) {
+        // Show comparison modal or alert
+        const comparison = `
+            COMPARING SUBMISSIONS:
+            
+            CURRENT VERSION (${new Date(currentSubmission.submitted_at).toLocaleString()}):
+            - Score: ${currentSubmission.score || 'Not graded'}
+            - Status: ${currentSubmission.status}
+            ${currentSubmission.feedback ? `- Feedback: ${currentSubmission.feedback}` : ''}
+            
+            LATEST VERSION (${new Date(latestSubmission.submitted_at).toLocaleString()}):
+            - Score: ${latestSubmission.score || 'Not graded'}
+            - Status: ${latestSubmission.status}
+            ${latestSubmission.feedback ? `- Feedback: ${latestSubmission.feedback}` : ''}
+        `;
+        
+        alert(comparison);
+    }
+}
