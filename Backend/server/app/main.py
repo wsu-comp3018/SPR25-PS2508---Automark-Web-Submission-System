@@ -2175,7 +2175,12 @@ class SVNJobIn(BaseModel):
     revision: int
 
 def _process_svn_job_results(job_id: int, folder_id: int, svn_url: str, revision: int, results_dir):
-    """Process SVN job results and create/update submission in database."""
+    """Process SVN job results and create/update submission in database.
+
+    Change: if an existing submission row exists for the (student, folder),
+    we bump submitted_at and increment revisions so attempts are tracked,
+    rather than overwriting silently.
+    """
     try:
         # Get student username from SVN job
         conn = sqlite3.connect(DB_PATH); c = conn.cursor()
@@ -2215,21 +2220,28 @@ def _process_svn_job_results(job_id: int, folder_id: int, svn_url: str, revision
         # Create or update submission
         now = now_iso()
         c.execute("""
-            SELECT id FROM submissions 
+            SELECT id, revisions FROM submissions 
             WHERE folder_id = ? AND student_id = ? 
             ORDER BY id DESC LIMIT 1
         """, (folder_id, student_id))
         existing_sub = c.fetchone()
         
         if existing_sub:
-            # Update existing submission
+            # Update existing submission: bump submitted_at and revisions
+            existing_id, existing_revisions = existing_sub[0], (existing_sub[1] or 1)
+            new_revisions = existing_revisions + 1
             c.execute("""
                 UPDATE submissions 
-                SET score = ?, feedback = ?, status = ?, graded_at = ?
-                WHERE id = ?
-            """, (score, feedback, status, now, existing_sub[0]))
-            submission_id = existing_sub[0]
-            logger.info(f"✅ Updated submission {submission_id} for student {student_username}")
+                   SET submitted_at = ?, 
+                       score = ?, 
+                       feedback = ?, 
+                       status = ?, 
+                       graded_at = ?, 
+                       revisions = ?
+                 WHERE id = ?
+            """, (now, score, feedback, status, now, new_revisions, existing_id))
+            submission_id = existing_id
+            logger.info(f"✅ Updated submission {submission_id} (revisions={new_revisions}) for student {student_username}")
         else:
             # Create new submission
             c.execute("""
