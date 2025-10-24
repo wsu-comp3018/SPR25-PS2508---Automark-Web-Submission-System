@@ -2963,7 +2963,7 @@ async def get_historic_statistics(current_user: dict = Depends(get_current_user)
 
 @app.get("/api/v1/assignments/{assignment_id}/csv")
 async def generate_assignment_csv(assignment_id: int, current_user: dict = Depends(get_current_user)):
-    """Generate CSV for a specific assignment with highest scores"""
+    """Generate CSV for a specific assignment with highest scores and accurate attempt counts."""
     if current_user["role"] != "lecturer":
         raise HTTPException(status_code=403, detail="Only lecturers can generate CSV reports")
     
@@ -2983,18 +2983,35 @@ async def generate_assignment_csv(assignment_id: int, current_user: dict = Depen
         if not assignment:
             raise HTTPException(status_code=404, detail="Assignment not found")
         
-        # Get highest scores for each student (auto-updates when higher scores are submitted)
+        # Compute per-student stats and attempt count.
+        # Attempt count priority:
+        #  1) Number of svn_jobs rows for (folder_id, student_username)  -> exact SVN attempts
+        #  2) MAX(submissions.revisions)                                 -> web uploads tracking
+        #  3) COUNT(submissions.id)                                      -> legacy fallback
         c.execute("""
             SELECT 
                 u.username,
                 u.first_name,
                 u.last_name,
                 u.email,
-                MAX(s.score) as highest_score,
-                MAX(s.submitted_at) as latest_submission,
-                COUNT(s.id) as submission_count
+                MAX(s.score) AS highest_score,
+                MAX(s.submitted_at) AS latest_submission,
+                COALESCE(
+                    (SELECT COUNT(*)
+                       FROM svn_jobs j
+                      WHERE j.folder_id = f.id 
+                        AND j.student_username = u.username),
+                    MAX(COALESCE(s.revisions, 1)),
+                    COUNT(s.id)
+                ) AS submission_count,
+                -- Optional list of submission row history (if multiple rows exist)
+                (SELECT GROUP_CONCAT(s2.submitted_at || '|' || COALESCE(s2.score, 'NULL') || '|' || s2.status, ';')
+                   FROM submissions s2 
+                  WHERE s2.student_id = u.id AND s2.folder_id = f.id
+                  ORDER BY s2.submitted_at DESC) AS submission_history
             FROM submissions s
-            JOIN users u ON s.student_id = u.id
+            JOIN users u   ON s.student_id = u.id
+            JOIN folders f ON s.folder_id = f.id
             WHERE s.folder_id = ?
             GROUP BY u.id
             ORDER BY highest_score DESC, u.username
@@ -3033,7 +3050,7 @@ async def generate_assignment_csv(assignment_id: int, current_user: dict = Depen
         
         # Generate filename: subjectcode_assignmentname.csv
         filename = f"{assignment['subject_code']}_{assignment['name'].replace(' ', '_')}.csv"
-        
+        print(filename)
         return {
             "csv_content": csv_content,
             "filename": filename,
