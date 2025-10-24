@@ -2175,7 +2175,12 @@ class SVNJobIn(BaseModel):
     revision: int
 
 def _process_svn_job_results(job_id: int, folder_id: int, svn_url: str, revision: int, results_dir):
-    """Process SVN job results and create/update submission in database."""
+    """Process SVN job results and create/update submission in database.
+
+    Change: if an existing submission row exists for the (student, folder),
+    we bump submitted_at and increment revisions so attempts are tracked,
+    rather than overwriting silently.
+    """
     try:
         # Get student username from SVN job
         conn = sqlite3.connect(DB_PATH); c = conn.cursor()
@@ -2215,21 +2220,28 @@ def _process_svn_job_results(job_id: int, folder_id: int, svn_url: str, revision
         # Create or update submission
         now = now_iso()
         c.execute("""
-            SELECT id FROM submissions 
+            SELECT id, revisions FROM submissions 
             WHERE folder_id = ? AND student_id = ? 
             ORDER BY id DESC LIMIT 1
         """, (folder_id, student_id))
         existing_sub = c.fetchone()
         
         if existing_sub:
-            # Update existing submission
+            # Update existing submission: bump submitted_at and revisions
+            existing_id, existing_revisions = existing_sub[0], (existing_sub[1] or 1)
+            new_revisions = existing_revisions + 1
             c.execute("""
                 UPDATE submissions 
-                SET score = ?, feedback = ?, status = ?, graded_at = ?
-                WHERE id = ?
-            """, (score, feedback, status, now, existing_sub[0]))
-            submission_id = existing_sub[0]
-            logger.info(f"✅ Updated submission {submission_id} for student {student_username}")
+                   SET submitted_at = ?, 
+                       score = ?, 
+                       feedback = ?, 
+                       status = ?, 
+                       graded_at = ?, 
+                       revisions = ?
+                 WHERE id = ?
+            """, (now, score, feedback, status, now, new_revisions, existing_id))
+            submission_id = existing_id
+            logger.info(f"✅ Updated submission {submission_id} (revisions={new_revisions}) for student {student_username}")
         else:
             # Create new submission
             c.execute("""
@@ -2978,7 +2990,7 @@ async def get_historic_statistics(current_user: dict = Depends(get_current_user)
 
 @app.get("/api/v1/assignments/{assignment_id}/csv")
 async def generate_assignment_csv(assignment_id: int, current_user: dict = Depends(get_current_user)):
-    """Generate CSV for a specific assignment with highest scores"""
+    """Generate CSV for a specific assignment with highest scores and accurate attempt counts."""
     if current_user["role"] != "lecturer":
         raise HTTPException(status_code=403, detail="Only lecturers can generate CSV reports")
     
@@ -2998,23 +3010,34 @@ async def generate_assignment_csv(assignment_id: int, current_user: dict = Depen
         if not assignment:
             raise HTTPException(status_code=404, detail="Assignment not found")
         
-        # Get highest scores for each student (auto-updates when higher scores are submitted)
+        # Compute per-student stats and attempt count.
+        # Attempt count priority:
+        #  1) Number of svn_jobs rows for (folder_id, student_username)  -> exact SVN attempts
+        #  2) MAX(submissions.revisions)                                 -> web uploads tracking
+        #  3) COUNT(submissions.id)                                      -> legacy fallback
         c.execute("""
             SELECT 
                 u.username,
                 u.first_name,
                 u.last_name,
                 u.email,
-                MAX(s.score) as highest_score,
-                MAX(s.submitted_at) as latest_submission,
-                COUNT(s.id) as submission_count,
-                -- Add version information
+                MAX(s.score) AS highest_score,
+                MAX(s.submitted_at) AS latest_submission,
+                COALESCE(
+                    (SELECT COUNT(*)
+                       FROM svn_jobs j
+                      WHERE j.folder_id = f.id 
+                        AND j.student_username = u.username),
+                    MAX(COALESCE(s.revisions, 1)),
+                    COUNT(s.id)
+                ) AS submission_count,
+                -- Optional list of submission row history (if multiple rows exist)
                 (SELECT GROUP_CONCAT(s2.submitted_at || '|' || COALESCE(s2.score, 'NULL') || '|' || s2.status, ';')
-                FROM submissions s2 
-                WHERE s2.student_id = u.id AND s2.folder_id = f.id
-                ORDER BY s2.submitted_at DESC) as submission_history
+                   FROM submissions s2 
+                  WHERE s2.student_id = u.id AND s2.folder_id = f.id
+                  ORDER BY s2.submitted_at DESC) AS submission_history
             FROM submissions s
-            JOIN users u ON s.student_id = u.id
+            JOIN users u   ON s.student_id = u.id
             JOIN folders f ON s.folder_id = f.id
             WHERE s.folder_id = ?
             GROUP BY u.id
