@@ -1002,6 +1002,11 @@ window.deleteAssignment = deleteAssignment;
         window.exportHistoricData = exportHistoricData;
         window.viewSubmissionDetails = viewSubmissionDetails;
         window.downloadAssignmentCSV = downloadAssignmentCSV;
+        
+        window.toggleSubmissionVersions = toggleSubmissionVersions;
+        window.compareWithLatest = compareWithLatest;
+        window.removeAssignmentFile = removeAssignmentFile;
+        window.removeExistingLecturerFile = removeExistingLecturerFile;
 
         // Close modal when clicking outside
         window.onclick = function(event) {
