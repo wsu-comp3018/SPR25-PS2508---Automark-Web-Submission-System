@@ -374,6 +374,7 @@ def init_db():
             }
         ]
 
+
         now = now_iso()
         
         for lecturer in lecturers:
