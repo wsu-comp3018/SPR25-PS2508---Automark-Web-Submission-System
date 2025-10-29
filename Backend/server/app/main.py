@@ -542,20 +542,17 @@ def auto_assign_student_to_subject_folders(conn: sqlite3.Connection, student_id:
     return assigned
 
 def auto_enroll_student_randomly(conn: sqlite3.Connection, student_id: int, max_subjects: int = 2) -> int:
-    """Randomly enroll a student into up to max_subjects existing subjects and assign to current folders."""
+    """Enroll a student into ALL existing subjects and assign to current folders."""
     c = conn.cursor()
     # Load all subjects
     c.execute("SELECT id FROM subjects")
     subjects = [r[0] for r in c.fetchall()]
     if not subjects:
         return 0
-    # Pick 1..max_subjects randomly (at least 1)
-    k = min(max_subjects, len(subjects))
-    k = max(1, k)
-    pick = random.sample(subjects, k)
+    # Enroll in ALL subjects (not random)
     semester, year = current_semester_year()
     count = 0
-    for sid in pick:
+    for sid in subjects:
         # Enroll if not yet enrolled for this sem/year
         c.execute("""
             INSERT OR IGNORE INTO subject_enrollments (student_id, subject_id, enrolled_at, semester, year, status)

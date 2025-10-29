@@ -1,5 +1,8 @@
 FROM python:3.11-alpine
 
+# Install bash and jq for marker scripts
+RUN apk add --no-cache bash jq
+
 # Workdir for the job runner
 WORKDIR /work
 
