@@ -676,7 +676,8 @@ function createAssignmentElement(assignment) {
         clearTimeout(timeoutId);
         
         console.log('Assignment created successfully:', newAssignment);
-        
+        console.log('✅ ASSIGNMENT ID:', newAssignment.id);
+
         // Update local data structures immediately
         if (newAssignment && newAssignment.id) {
             allFolders.push(newAssignment);
